@@ -1,0 +1,177 @@
+import Fastify from "fastify";
+import cors from "@fastify/cors";
+import cookie from "@fastify/cookie";
+import multipart from "@fastify/multipart";
+import { createServer } from "http";
+import { env } from "./config/env.js";
+import { initSnowflake } from "@yxc/snowflake";
+import { authRoutes } from "./rest/routes/auth.js";
+import { guildRoutes } from "./rest/routes/guilds.js";
+import { messageRoutes } from "./rest/routes/messages.js";
+import { userRoutes } from "./rest/routes/users.js";
+import { publicWebhookRoutes } from "./rest/routes/webhookExec.js";
+import { cdnRoutes } from "./rest/routes/cdn.js";
+import { pollRoutes } from "./rest/routes/polls.js";
+import { featureRoutes } from "./rest/routes/features.js";
+import { moderationRoutes } from "./rest/routes/moderation.js";
+import searchRoutes from "./rest/routes/search.js";
+import { mfaRoutes } from "./rest/routes/mfa.js";
+import { automodRoutes } from "./rest/routes/automod.js";
+import { verificationRoutes } from "./rest/routes/verification.js";
+import { passkeyRoutes } from "./rest/routes/passkeys.js";
+import { recoveryRoutes } from "./rest/routes/recovery.js";
+import { eventRoutes } from "./rest/routes/events.js";
+import { publicRoutes } from "./rest/routes/public.js";
+import { stageRoutes } from "./rest/routes/stage.js";
+import { applicationRoutes } from "./rest/routes/applications.js";
+import { stickerRoutes } from "./rest/routes/stickers.js";
+import { soundboardRoutes } from "./rest/routes/soundboard.js";
+import { interactionRoutes } from "./rest/routes/interactions.js";
+import { forumTagRoutes } from "./rest/routes/forumTags.js";
+import { sessionRoutes } from "./rest/routes/sessions.js";
+import { createGateway } from "./gateway/index.js";
+import { startBackgroundJobs } from "./jobs/index.js";
+import { ApiError } from "./services/auth.service.js";
+import { ZodError } from "zod";
+import { globalRateLimit } from "./middleware/rateLimit.js";
+
+// Dynamic worker ID from pod hostname for unique snowflake IDs across replicas
+function hashCode(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+const podName = process.env.HOSTNAME || "default";
+const workerId = hashCode(podName) % 32;
+const processId = hashCode(podName + "-proc") % 32;
+initSnowflake(workerId, processId);
+console.log(`Snowflake initialized: workerId=${workerId}, processId=${processId} (pod: ${podName})`);
+
+const app = Fastify({
+  logger: {
+    level: env.NODE_ENV === "production" ? "info" : "debug",
+    transport:
+      env.NODE_ENV !== "production"
+        ? { target: "pino-pretty", options: { colorize: true } }
+        : undefined,
+  },
+});
+
+// CORS
+await app.register(cors, {
+  origin: true,
+  credentials: true,
+});
+
+// Cookies
+await app.register(cookie);
+
+// Multipart (file uploads)
+await app.register(multipart, {
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB
+    files: 10,
+  },
+});
+
+// Global rate limiting
+app.addHook("preHandler", globalRateLimit);
+
+// Error handler
+app.setErrorHandler((error, request, reply) => {
+  if (error instanceof ApiError) {
+    return reply.status(error.statusCode).send({
+      statusCode: error.statusCode,
+      message: error.message,
+    });
+  }
+
+  if (error instanceof ZodError) {
+    return reply.status(400).send({
+      statusCode: 400,
+      message: "Validation error",
+      errors: error.errors,
+    });
+  }
+
+  app.log.error(error);
+  return reply.status(500).send({
+    statusCode: 500,
+    message: "Internal server error",
+  });
+});
+
+// Register routes
+await app.register(authRoutes, { prefix: "/api" });
+await app.register(guildRoutes, { prefix: "/api" });
+await app.register(messageRoutes, { prefix: "/api" });
+await app.register(userRoutes, { prefix: "/api" });
+await app.register(publicWebhookRoutes, { prefix: "/api" });
+await app.register(pollRoutes, { prefix: "/api" });
+await app.register(featureRoutes, { prefix: "/api" });
+await app.register(moderationRoutes, { prefix: "/api" });
+await app.register(searchRoutes, { prefix: "/api" });
+await app.register(mfaRoutes, { prefix: "/api" });
+await app.register(automodRoutes, { prefix: "/api" });
+await app.register(verificationRoutes, { prefix: "/api" });
+await app.register(passkeyRoutes, { prefix: "/api" });
+await app.register(recoveryRoutes, { prefix: "/api" });
+await app.register(eventRoutes, { prefix: "/api" });
+await app.register(publicRoutes, { prefix: "/api" });
+await app.register(stageRoutes, { prefix: "/api" });
+await app.register(applicationRoutes, { prefix: "/api" });
+await app.register(stickerRoutes, { prefix: "/api" });
+await app.register(soundboardRoutes, { prefix: "/api" });
+await app.register(interactionRoutes, { prefix: "/api" });
+await app.register(forumTagRoutes, { prefix: "/api" });
+await app.register(sessionRoutes, { prefix: "/api" });
+await app.register(cdnRoutes); // CDN routes at root (no /api prefix)
+
+// Health check with dependency verification
+app.get("/health", async () => {
+  const checks: Record<string, string> = { api: "ok" };
+  try {
+    const { db } = await import("./db/index.js");
+    const { sql } = await import("drizzle-orm");
+    await db.execute(sql`SELECT 1`);
+    checks.database = "ok";
+  } catch {
+    checks.database = "error";
+  }
+  try {
+    const { redis } = await import("./config/redis.js");
+    await redis.ping();
+    checks.redis = "ok";
+  } catch {
+    checks.redis = "error";
+  }
+  const allOk = Object.values(checks).every(v => v === "ok");
+  return { status: allOk ? "ok" : "degraded", checks, pod: process.env.HOSTNAME };
+});
+
+// Start server
+const start = async () => {
+  try {
+    const server = app.server;
+
+    // Attach Socket.IO gateway to the same HTTP server
+    const io = createGateway(server);
+    app.decorate("io", io);
+
+    await app.listen({ port: env.API_PORT, host: env.API_HOST });
+    app.log.info(`API server listening on ${env.API_HOST}:${env.API_PORT}`);
+    app.log.info(`Gateway WebSocket available at /gateway`);
+
+    // Start background jobs (scheduled messages, cleanup)
+    startBackgroundJobs();
+  } catch (err) {
+    app.log.error(err);
+    process.exit(1);
+  }
+};
+
+start();
