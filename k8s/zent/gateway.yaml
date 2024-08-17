@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zent-gateway
+  namespace: zent
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: zent-gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: zent-gateway
+    spec:
+      enableServiceLinks: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: zent-gateway
+      containers:
+        - name: zent-gateway
+          image: ghcr.io/akadon/zent-gateway:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 4002
+          env:
+            - name: GATEWAY_PORT
+              value: "4002"
+            - name: NODE_ENV
+              value: "production"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: zent-config
+                  key: REDIS_URL
+            - name: AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: zent-secrets
+                  key: AUTH_SECRET
+            - name: LIVEKIT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: zent-config
+                  key: LIVEKIT_URL
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4002
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 4002
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zent-gateway
+  namespace: zent
+spec:
+  selector:
+    app: zent-gateway
+  ports:
+    - port: 4002
+      targetPort: 4002
