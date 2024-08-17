@@ -1,0 +1,76 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zent-api-pdb
+  namespace: zent
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: zent-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zent-web-pdb
+  namespace: zent
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: zent-web
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres-pdb
+  namespace: zent
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: postgres
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-pdb
+  namespace: zent
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: redis
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zent-auth-pdb
+  namespace: zent
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: zent-auth
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zent-gateway-pdb
+  namespace: zent
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: zent-gateway
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zent-cdn-pdb
+  namespace: zent
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: zent-cdn

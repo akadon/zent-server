@@ -1,0 +1,44 @@
+# Development - use localhost
+# Production - replace with your domain
+:80 {
+	handle /api/* {
+		reverse_proxy api:4000
+	}
+
+	handle /socket.io/* {
+		reverse_proxy api:4000
+	}
+
+	# File serving (avatars, attachments, etc.) handled by API server
+	handle /attachments/* {
+		reverse_proxy api:4000
+	}
+
+	handle /avatars/* {
+		reverse_proxy api:4000
+	}
+
+	handle /banners/* {
+		reverse_proxy api:4000
+	}
+
+	handle /icons/* {
+		reverse_proxy api:4000
+	}
+
+	handle /emojis/* {
+		reverse_proxy api:4000
+	}
+
+	handle /files/* {
+		reverse_proxy api:4000
+	}
+
+	handle /upload {
+		reverse_proxy api:4000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}
