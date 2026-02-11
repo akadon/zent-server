@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zent
+  labels:
+    app.kubernetes.io/part-of: zent
+    pod-security.kubernetes.io/enforce: privileged

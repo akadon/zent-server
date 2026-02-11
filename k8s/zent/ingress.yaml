@@ -1,0 +1,155 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zent-ingress
+  namespace: zent
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/enable-websocket: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - 3aka.com
+      secretName: wildcard-tls
+  rules:
+    - host: 3aka.com
+      http:
+        paths:
+          # WebSocket gateway - routes to gateway service
+          - path: /gateway
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-gateway
+                port:
+                  number: 4002
+          - path: /socket.io
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-gateway
+                port:
+                  number: 4002
+          # Auth endpoints
+          - path: /api/auth
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-auth
+                port:
+                  number: 4001
+          - path: /api/mfa
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-auth
+                port:
+                  number: 4001
+          - path: /api/passkeys
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-auth
+                port:
+                  number: 4001
+          - path: /api/sessions
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-auth
+                port:
+                  number: 4001
+          - path: /api/recovery
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-auth
+                port:
+                  number: 4001
+          - path: /api/verification
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-auth
+                port:
+                  number: 4001
+          # CDN/file endpoints
+          - path: /api/cdn
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-cdn
+                port:
+                  number: 4003
+          - path: /avatars
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-cdn
+                port:
+                  number: 4003
+          - path: /attachments
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-cdn
+                port:
+                  number: 4003
+          - path: /icons
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-cdn
+                port:
+                  number: 4003
+          - path: /emojis
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-cdn
+                port:
+                  number: 4003
+          - path: /banners
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-cdn
+                port:
+                  number: 4003
+          # Matrix federation
+          - path: /_matrix
+            pathType: Prefix
+            backend:
+              service:
+                name: dendrite
+                port:
+                  number: 8008
+          # Health check
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: zent-api
+                port:
+                  number: 4000
+          # API (general backend) - catch-all for /api
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-api
+                port:
+                  number: 4000
+          # Frontend - catch-all
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: zent-web
+                port:
+                  number: 3000
