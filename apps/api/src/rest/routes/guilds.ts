@@ -131,6 +131,8 @@ export async function guildRoutes(app: FastifyInstance) {
       })
       .parse(request.body);
 
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_CHANNELS);
+
     const channel = await channelService.createChannel(guildId, body);
     await dispatchGuild(guildId, "CHANNEL_CREATE", channel);
     await auditlogService.createAuditLogEntry(guildId, request.userId, AuditLogActionType.CHANNEL_CREATE, channel.id);
@@ -161,6 +163,11 @@ export async function guildRoutes(app: FastifyInstance) {
       })
       .parse(request.body);
 
+    const existingChannel = await channelService.getChannel(channelId);
+    if (existingChannel?.guildId) {
+      await permissionService.requireGuildPermission(request.userId, existingChannel.guildId, PermissionFlags.MANAGE_CHANNELS);
+    }
+
     const channel = await channelService.updateChannel(channelId, body);
     if (channel.guildId) {
       await dispatchGuild(channel.guildId, "CHANNEL_UPDATE", channel);
@@ -172,6 +179,9 @@ export async function guildRoutes(app: FastifyInstance) {
   app.delete("/channels/:channelId", async (request, reply) => {
     const { channelId } = request.params as { channelId: string };
     const channel = await channelService.getChannel(channelId);
+    if (channel?.guildId) {
+      await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.MANAGE_CHANNELS);
+    }
     await channelService.deleteChannel(channelId);
     if (channel?.guildId) {
       await dispatchGuild(channel.guildId, "CHANNEL_DELETE", { id: channelId, guildId: channel.guildId });
@@ -193,6 +203,7 @@ export async function guildRoutes(app: FastifyInstance) {
 
   app.delete("/guilds/:guildId/members/:userId", async (request, reply) => {
     const { guildId, userId } = request.params as { guildId: string; userId: string };
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.KICK_MEMBERS);
     const user = await getUserById(userId);
     await memberService.kickMember(guildId, userId, request.userId);
     await dispatchGuild(guildId, "GUILD_MEMBER_REMOVE", {
@@ -208,6 +219,7 @@ export async function guildRoutes(app: FastifyInstance) {
   app.put("/guilds/:guildId/bans/:userId", async (request, reply) => {
     const { guildId, userId } = request.params as { guildId: string; userId: string };
     const body = z.object({ reason: z.string().optional() }).parse(request.body ?? {});
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.BAN_MEMBERS);
     const user = await getUserById(userId);
     await memberService.banMember(guildId, userId, request.userId, body.reason);
     await dispatchGuild(guildId, "GUILD_BAN_ADD", {
@@ -220,6 +232,7 @@ export async function guildRoutes(app: FastifyInstance) {
 
   app.delete("/guilds/:guildId/bans/:userId", async (request, reply) => {
     const { guildId, userId } = request.params as { guildId: string; userId: string };
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.BAN_MEMBERS);
     const user = await getUserById(userId);
     await memberService.unbanMember(guildId, userId);
     await dispatchGuild(guildId, "GUILD_BAN_REMOVE", {
@@ -232,12 +245,22 @@ export async function guildRoutes(app: FastifyInstance) {
 
   app.get("/guilds/:guildId/bans", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.BAN_MEMBERS);
     const bans = await db.select().from(schema.bans).where(eq(schema.bans.guildId, guildId));
-    const result = [];
-    for (const ban of bans) {
-      const user = await getUserById(ban.userId);
-      result.push({ reason: ban.reason, user: user ? { id: user.id, username: user.username, avatar: user.avatar } : null });
-    }
+    if (bans.length === 0) return reply.send([]);
+
+    const bannedUserIds = bans.map((b) => b.userId);
+    const { inArray } = await import("drizzle-orm");
+    const bannedUsers = await db
+      .select({ id: schema.users.id, username: schema.users.username, avatar: schema.users.avatar })
+      .from(schema.users)
+      .where(inArray(schema.users.id, bannedUserIds));
+    const userMap = new Map(bannedUsers.map((u) => [u.id, u]));
+
+    const result = bans.map((ban) => {
+      const user = userMap.get(ban.userId);
+      return { reason: ban.reason, user: user ? { id: user.id, username: user.username, avatar: user.avatar } : null };
+    });
     return reply.send(result);
   });
 
@@ -347,6 +370,8 @@ export async function guildRoutes(app: FastifyInstance) {
     const channel = await channelService.getChannel(channelId);
     if (!channel || !channel.guildId) throw new ApiError(404, "Channel not found");
 
+    await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.CREATE_INSTANT_INVITE);
+
     const invite = await inviteService.createInvite(
       channel.guildId,
       channelId,
@@ -387,6 +412,7 @@ export async function guildRoutes(app: FastifyInstance) {
 
   app.get("/guilds/:guildId/invites", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_GUILD);
     const invites = await inviteService.getGuildInvites(guildId);
     return reply.send(invites);
   });
@@ -394,6 +420,7 @@ export async function guildRoutes(app: FastifyInstance) {
   app.delete("/invites/:code", async (request, reply) => {
     const { code } = request.params as { code: string };
     const invite = await inviteService.getInvite(code);
+    await permissionService.requireGuildPermission(request.userId, invite.guildId, PermissionFlags.MANAGE_GUILD);
     await inviteService.deleteInvite(code);
     await dispatchGuild(invite.guildId, "INVITE_DELETE", {
       channelId: invite.channelId,
@@ -408,12 +435,17 @@ export async function guildRoutes(app: FastifyInstance) {
 
   app.get("/channels/:channelId/webhooks", async (request, reply) => {
     const { channelId } = request.params as { channelId: string };
+    const channel = await channelService.getChannel(channelId);
+    if (channel?.guildId) {
+      await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.MANAGE_WEBHOOKS);
+    }
     const webhooks = await webhookService.getChannelWebhooks(channelId);
     return reply.send(webhooks);
   });
 
   app.get("/guilds/:guildId/webhooks", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_WEBHOOKS);
     const webhooks = await webhookService.getGuildWebhooks(guildId);
     return reply.send(webhooks);
   });
@@ -429,6 +461,8 @@ export async function guildRoutes(app: FastifyInstance) {
 
     const channel = await channelService.getChannel(channelId);
     if (!channel || !channel.guildId) throw new ApiError(404, "Channel not found");
+
+    await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.MANAGE_WEBHOOKS);
 
     const webhook = await webhookService.createWebhook(
       channel.guildId,
@@ -457,6 +491,9 @@ export async function guildRoutes(app: FastifyInstance) {
       })
       .parse(request.body);
 
+    const existingWebhook = await webhookService.getWebhook(webhookId);
+    await permissionService.requireGuildPermission(request.userId, existingWebhook.guildId, PermissionFlags.MANAGE_WEBHOOKS);
+
     const webhook = await webhookService.updateWebhook(webhookId, body);
     return reply.send(webhook);
   });
@@ -464,6 +501,7 @@ export async function guildRoutes(app: FastifyInstance) {
   app.delete("/webhooks/:webhookId", async (request, reply) => {
     const { webhookId } = request.params as { webhookId: string };
     const webhook = await webhookService.getWebhook(webhookId);
+    await permissionService.requireGuildPermission(request.userId, webhook.guildId, PermissionFlags.MANAGE_WEBHOOKS);
     await webhookService.deleteWebhook(webhookId);
     await auditlogService.createAuditLogEntry(webhook.guildId, request.userId, AuditLogActionType.WEBHOOK_DELETE, webhookId);
     return reply.status(204).send();
@@ -494,6 +532,8 @@ export async function guildRoutes(app: FastifyInstance) {
       })
       .parse(request.body);
 
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_EMOJIS_AND_STICKERS);
+
     const emoji = await emojiService.createEmoji(guildId, body.name, request.userId, body.animated);
     await dispatchGuild(guildId, "GUILD_EMOJIS_UPDATE", {
       guildId,
@@ -506,6 +546,7 @@ export async function guildRoutes(app: FastifyInstance) {
   app.patch("/guilds/:guildId/emojis/:emojiId", async (request, reply) => {
     const { guildId, emojiId } = request.params as { guildId: string; emojiId: string };
     const body = z.object({ name: z.string().min(2).max(32) }).parse(request.body);
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_EMOJIS_AND_STICKERS);
     const emoji = await emojiService.updateEmoji(emojiId, body.name);
     await dispatchGuild(guildId, "GUILD_EMOJIS_UPDATE", {
       guildId,
@@ -517,6 +558,7 @@ export async function guildRoutes(app: FastifyInstance) {
 
   app.delete("/guilds/:guildId/emojis/:emojiId", async (request, reply) => {
     const { guildId, emojiId } = request.params as { guildId: string; emojiId: string };
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_EMOJIS_AND_STICKERS);
     await emojiService.deleteEmoji(emojiId);
     await dispatchGuild(guildId, "GUILD_EMOJIS_UPDATE", {
       guildId,
@@ -537,6 +579,11 @@ export async function guildRoutes(app: FastifyInstance) {
         autoArchiveDuration: z.number().int().optional(),
       })
       .parse(request.body);
+
+    const parentChannel = await channelService.getChannel(channelId);
+    if (parentChannel?.guildId) {
+      await permissionService.requireGuildPermission(request.userId, parentChannel.guildId, PermissionFlags.SEND_MESSAGES);
+    }
 
     const thread = await threadService.createThread(channelId, body.name, request.userId, {
       type: body.type,
@@ -563,6 +610,11 @@ export async function guildRoutes(app: FastifyInstance) {
       })
       .parse(request.body);
 
+    const existingThread = await threadService.getThread(threadId);
+    if (existingThread?.guildId) {
+      await permissionService.requireGuildPermission(request.userId, existingThread.guildId, PermissionFlags.MANAGE_THREADS);
+    }
+
     const thread = await threadService.updateThread(threadId, body);
     if (thread?.guildId) {
       await dispatchGuild(thread.guildId, "THREAD_UPDATE", thread);
@@ -574,6 +626,9 @@ export async function guildRoutes(app: FastifyInstance) {
   app.delete("/channels/:threadId/thread", async (request, reply) => {
     const { threadId } = request.params as { threadId: string };
     const thread = await threadService.getThread(threadId);
+    if (thread?.guildId) {
+      await permissionService.requireGuildPermission(request.userId, thread.guildId, PermissionFlags.MANAGE_THREADS);
+    }
     await threadService.deleteThread(threadId);
     if (thread?.guildId) {
       await dispatchGuild(thread.guildId, "THREAD_DELETE", { id: threadId, guildId: thread.guildId, parentId: thread.parentId });

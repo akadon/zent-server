@@ -105,7 +105,7 @@ export async function executeWebhook(
     .values({
       id,
       channelId: webhook.channelId,
-      authorId: webhook.creatorId!,
+      authorId: webhook.id,
       content,
       type: 0,
       tts: options?.tts ?? false,
@@ -124,6 +124,12 @@ export async function executeWebhook(
     channelId: message!.channelId,
     content: message!.content,
     webhookId: webhook.id,
+    author: {
+      id: webhook.id,
+      username: options?.username ?? webhook.name,
+      avatar: options?.avatarUrl ?? webhook.avatar,
+      bot: true,
+    },
     createdAt: message!.createdAt.toISOString(),
   };
 }

@@ -23,6 +23,7 @@ import { eq } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 
 const HEARTBEAT_INTERVAL = 41250; // ~41s
+const PRESENCE_TTL = 300; // 5 minutes
 
 interface GatewaySession {
   userId: string;
@@ -175,13 +176,18 @@ export function createGateway(httpServer: HttpServer) {
         }
       } else if (channel.startsWith("gateway:user:")) {
         const userId = channel.replace("gateway:user:", "");
-        const payload: GatewayPayload = {
-          op: GatewayOp.DISPATCH,
-          t: parsed.event as any,
-          s: 0,
-          d: parsed.data,
-        };
-        io.to(`user:${userId}`).emit("message", payload);
+        const socketsInUserRoom = await io.in(`user:${userId}`).fetchSockets();
+        for (const remoteSocket of socketsInUserRoom) {
+          const socketSession = sessions.get(remoteSocket.id);
+          if (!socketSession) continue;
+          const payload: GatewayPayload = {
+            op: GatewayOp.DISPATCH,
+            t: parsed.event as any,
+            s: socketSession.sequence++,
+            d: parsed.data,
+          };
+          remoteSocket.emit("message", payload);
+        }
       }
     } catch {
       // Ignore malformed messages
@@ -241,20 +247,21 @@ export function createGateway(httpServer: HttpServer) {
         // Set user offline
         await setPresence(session.userId, "offline", null);
 
-        // Broadcast offline status to all guilds
+        // Broadcast offline status to all guilds via Redis pub/sub so sequence is handled per-socket
         for (const guildId of session.guilds) {
           socket.leave(`guild:${guildId}`);
-          io.to(`guild:${guildId}`).emit("message", {
-            op: GatewayOp.DISPATCH,
-            t: "PRESENCE_UPDATE",
-            s: 0,
-            d: {
-              userId: session.userId,
-              guildId,
-              status: "offline",
-              customStatus: null,
-            },
-          });
+          await redisPub.publish(
+            `gateway:guild:${guildId}`,
+            JSON.stringify({
+              event: "PRESENCE_UPDATE",
+              data: {
+                userId: session.userId,
+                guildId,
+                status: "offline",
+                customStatus: null,
+              },
+            })
+          );
         }
 
         // Keep session in index for 5 minutes for resume
@@ -306,14 +313,15 @@ export function createGateway(httpServer: HttpServer) {
       // Set user online
       await setPresence(user.id, "online", null);
 
-      // Broadcast online to all guilds
+      // Broadcast online to all guilds via Redis pub/sub so sequence is handled per-socket
       for (const guild of userGuilds) {
-        io.to(`guild:${guild.id}`).emit("message", {
-          op: GatewayOp.DISPATCH,
-          t: "PRESENCE_UPDATE",
-          s: 0,
-          d: { userId: user.id, guildId: guild.id, status: "online", customStatus: null },
-        });
+        await redisPub.publish(
+          `gateway:guild:${guild.id}`,
+          JSON.stringify({
+            event: "PRESENCE_UPDATE",
+            data: { userId: user.id, guildId: guild.id, status: "online", customStatus: null },
+          })
+        );
       }
 
       // Send READY
@@ -406,30 +414,33 @@ export function createGateway(httpServer: HttpServer) {
         activities
       );
 
-      // Broadcast to all guilds
+      // Broadcast to all guilds via Redis pub/sub so sequence is handled per-socket
       for (const guildId of session.guilds) {
-        io.to(`guild:${guildId}`).emit("message", {
-          op: GatewayOp.DISPATCH,
-          t: "PRESENCE_UPDATE",
-          s: 0,
-          d: {
-            userId: session.userId,
-            guildId,
-            status: data.status,
-            customStatus: data.customStatus ?? null,
-            activities,
-            clientStatus: { web: data.status },
-          },
-        });
+        await redisPub.publish(
+          `gateway:guild:${guildId}`,
+          JSON.stringify({
+            event: "PRESENCE_UPDATE",
+            data: {
+              userId: session.userId,
+              guildId,
+              status: data.status,
+              customStatus: data.customStatus ?? null,
+              activities,
+              clientStatus: { web: data.status },
+            },
+          })
+        );
       }
     }
 
-    function handleHeartbeat(
+    async function handleHeartbeat(
       socket: ReturnType<typeof io.sockets.sockets.get> extends infer S ? NonNullable<S> : never
     ) {
       if (session) {
         session.lastHeartbeat = Date.now();
         resetHeartbeatTimer(socket);
+        // Refresh presence TTL on heartbeat
+        await redis.expire(`presence:${session.userId}`, PRESENCE_TTL);
       }
       socket.emit("message", { op: GatewayOp.HEARTBEAT_ACK, d: null });
     }
@@ -517,12 +528,14 @@ async function setPresence(
   customStatus: { text?: string; emoji?: string } | null,
   activities: unknown[] = []
 ) {
-  await redis.hset(`presence:${userId}`, {
+  const presenceKey = `presence:${userId}`;
+  await redis.hset(presenceKey, {
     status,
     customStatus: JSON.stringify(customStatus),
     activities: JSON.stringify(activities),
     lastSeen: Date.now().toString(),
   });
+  await redis.expire(presenceKey, PRESENCE_TTL);
 
   // Update DB - user status
   await db
@@ -559,34 +572,44 @@ async function setPresence(
 }
 
 /**
- * Dispatch an event to all members in a guild.
+ * Dispatch an event to all members in a guild with per-socket sequence numbers.
  */
-export function dispatchToGuild(
+export async function dispatchToGuild(
   io: SocketIOServer,
   guildId: string,
   event: string,
   data: unknown
 ) {
-  const payload: GatewayPayload = {
-    op: GatewayOp.DISPATCH,
-    t: event as any,
-    s: 0,
-    d: data,
-  };
-  io.to(`guild:${guildId}`).emit("message", payload);
+  const socketsInRoom = await io.in(`guild:${guildId}`).fetchSockets();
+  for (const remoteSocket of socketsInRoom) {
+    const socketSession = sessions.get(remoteSocket.id);
+    const seq = socketSession ? socketSession.sequence++ : 0;
+    const payload: GatewayPayload = {
+      op: GatewayOp.DISPATCH,
+      t: event as any,
+      s: seq,
+      d: data,
+    };
+    remoteSocket.emit("message", payload);
+  }
 }
 
-export function dispatchToUser(
+export async function dispatchToUser(
   io: SocketIOServer,
   userId: string,
   event: string,
   data: unknown
 ) {
-  const payload: GatewayPayload = {
-    op: GatewayOp.DISPATCH,
-    t: event as any,
-    s: 0,
-    d: data,
-  };
-  io.to(`user:${userId}`).emit("message", payload);
+  const socketsInRoom = await io.in(`user:${userId}`).fetchSockets();
+  for (const remoteSocket of socketsInRoom) {
+    const socketSession = sessions.get(remoteSocket.id);
+    const seq = socketSession ? socketSession.sequence++ : 0;
+    const payload: GatewayPayload = {
+      op: GatewayOp.DISPATCH,
+      t: event as any,
+      s: seq,
+      d: data,
+    };
+    remoteSocket.emit("message", payload);
+  }
 }

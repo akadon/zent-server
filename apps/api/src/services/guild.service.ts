@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { DEFAULT_PERMISSIONS } from "@yxc/permissions";
@@ -169,12 +169,80 @@ export async function getUserGuilds(userId: string) {
   if (userMembers.length === 0) return [];
 
   const guildIds = userMembers.map((m) => m.guildId);
-  const guildList = [];
-  for (const gid of guildIds) {
-    const g = await getGuild(gid);
-    if (g) guildList.push(g);
+
+  // Batch fetch all guilds
+  const guilds = await db
+    .select()
+    .from(schema.guilds)
+    .where(inArray(schema.guilds.id, guildIds));
+
+  // Batch fetch all channels for these guilds
+  const allChannels = await db
+    .select()
+    .from(schema.channels)
+    .where(inArray(schema.channels.guildId, guildIds));
+
+  // Batch fetch all roles for these guilds
+  const allRoles = await db
+    .select()
+    .from(schema.roles)
+    .where(inArray(schema.roles.guildId, guildIds));
+
+  // Batch fetch all members for these guilds
+  const allMembers = await db
+    .select()
+    .from(schema.members)
+    .where(inArray(schema.members.guildId, guildIds));
+
+  // Index by guildId
+  const channelsByGuild = new Map<string, typeof allChannels>();
+  for (const c of allChannels) {
+    const arr = channelsByGuild.get(c.guildId!) ?? [];
+    arr.push(c);
+    channelsByGuild.set(c.guildId!, arr);
   }
-  return guildList;
+
+  const rolesByGuild = new Map<string, typeof allRoles>();
+  for (const r of allRoles) {
+    const arr = rolesByGuild.get(r.guildId) ?? [];
+    arr.push(r);
+    rolesByGuild.set(r.guildId, arr);
+  }
+
+  const membersByGuild = new Map<string, typeof allMembers>();
+  for (const m of allMembers) {
+    const arr = membersByGuild.get(m.guildId) ?? [];
+    arr.push(m);
+    membersByGuild.set(m.guildId, arr);
+  }
+
+  return guilds.map((guild) => {
+    const guildChannels = channelsByGuild.get(guild.id) ?? [];
+    const guildRoles = rolesByGuild.get(guild.id) ?? [];
+    const guildMembers = membersByGuild.get(guild.id) ?? [];
+
+    return {
+      ...guild,
+      createdAt: guild.createdAt.toISOString(),
+      updatedAt: guild.updatedAt.toISOString(),
+      channels: guildChannels.map((c) => ({
+        ...c,
+        createdAt: c.createdAt.toISOString(),
+      })),
+      roles: guildRoles.map((r) => ({
+        ...r,
+        createdAt: r.createdAt.toISOString(),
+      })),
+      members: guildMembers.map((m) => ({
+        ...m,
+        joinedAt: m.joinedAt.toISOString(),
+        premiumSince: m.premiumSince?.toISOString() ?? null,
+        communicationDisabledUntil: m.communicationDisabledUntil?.toISOString() ?? null,
+      })),
+      memberCount: guildMembers.length,
+      voiceStates: [],
+    };
+  });
 }
 
 export async function isMember(userId: string, guildId: string): Promise<boolean> {

@@ -6,7 +6,7 @@ import { users } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import crypto from "crypto";
-import { ApiError, generateToken, verifyPassword } from "../../services/auth.service.js";
+import { ApiError, generateToken, verifyPassword, verifyMfaTicket } from "../../services/auth.service.js";
 
 // Base32 encoding (RFC 4648)
 const BASE32_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -115,7 +115,7 @@ const enableSchema = z.object({
 
 const verifySchema = z.object({
   code: z.string().length(6).regex(/^\d+$/),
-  userId: z.string().min(1),
+  ticket: z.string().min(1),
 });
 
 const disableSchema = z.object({
@@ -195,10 +195,14 @@ export async function mfaRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const body = verifySchema.parse(request.body);
 
+      // Decode userId from the short-lived MFA ticket instead of trusting client body
+      const ticketPayload = verifyMfaTicket(body.ticket);
+      const userId = ticketPayload.userId;
+
       const [user] = await db
         .select()
         .from(users)
-        .where(eq(users.id, body.userId))
+        .where(eq(users.id, userId))
         .limit(1);
 
       if (!user) throw new ApiError(404, "User not found");
@@ -225,7 +229,7 @@ export async function mfaRoutes(app: FastifyInstance) {
         await db
           .update(users)
           .set({ mfaBackupCodes: updatedCodes })
-          .where(eq(users.id, body.userId));
+          .where(eq(users.id, userId));
       }
 
       const token = generateToken(user.id);

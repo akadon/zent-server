@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { ApiError } from "./auth.service.js";
 
@@ -59,42 +59,45 @@ export async function getGuildMembers(guildId: string) {
     .from(schema.members)
     .where(eq(schema.members.guildId, guildId));
 
-  // Get user data and roles for each member
-  const result = [];
-  for (const m of memberList) {
-    const [user] = await db
-      .select({
-        id: schema.users.id,
-        username: schema.users.username,
-        displayName: schema.users.displayName,
-        avatar: schema.users.avatar,
-        status: schema.users.status,
-      })
-      .from(schema.users)
-      .where(eq(schema.users.id, m.userId))
-      .limit(1);
+  if (memberList.length === 0) return [];
 
-    const memberRoleList = await db
-      .select({ roleId: schema.memberRoles.roleId })
-      .from(schema.memberRoles)
-      .where(
-        and(
-          eq(schema.memberRoles.userId, m.userId),
-          eq(schema.memberRoles.guildId, guildId)
-        )
-      );
+  const userIds = memberList.map((m) => m.userId);
 
-    result.push({
-      ...m,
-      joinedAt: m.joinedAt.toISOString(),
-      premiumSince: m.premiumSince?.toISOString() ?? null,
-      communicationDisabledUntil: m.communicationDisabledUntil?.toISOString() ?? null,
-      user: user ?? null,
-      roles: memberRoleList.map((r) => r.roleId),
-    });
+  // Batch fetch all users in one query
+  const userList = await db
+    .select({
+      id: schema.users.id,
+      username: schema.users.username,
+      displayName: schema.users.displayName,
+      avatar: schema.users.avatar,
+      status: schema.users.status,
+    })
+    .from(schema.users)
+    .where(inArray(schema.users.id, userIds));
+
+  const userMap = new Map(userList.map((u) => [u.id, u]));
+
+  // Batch fetch all member roles in one query
+  const allMemberRoles = await db
+    .select({ userId: schema.memberRoles.userId, roleId: schema.memberRoles.roleId })
+    .from(schema.memberRoles)
+    .where(eq(schema.memberRoles.guildId, guildId));
+
+  const roleMap = new Map<string, string[]>();
+  for (const mr of allMemberRoles) {
+    const existing = roleMap.get(mr.userId) ?? [];
+    existing.push(mr.roleId);
+    roleMap.set(mr.userId, existing);
   }
 
-  return result;
+  return memberList.map((m) => ({
+    ...m,
+    joinedAt: m.joinedAt.toISOString(),
+    premiumSince: m.premiumSince?.toISOString() ?? null,
+    communicationDisabledUntil: m.communicationDisabledUntil?.toISOString() ?? null,
+    user: userMap.get(m.userId) ?? null,
+    roles: roleMap.get(m.userId) ?? [],
+  }));
 }
 
 export async function kickMember(guildId: string, targetId: string, kickerId: string) {
