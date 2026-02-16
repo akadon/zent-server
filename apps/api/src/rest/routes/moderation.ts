@@ -2,11 +2,13 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { authMiddleware } from "../../middleware/auth.js";
 import * as moderationQueueService from "../../services/moderation-queue.service.js";
+import * as permissionService from "../../services/permission.service.js";
+import { PermissionFlags } from "@yxc/permissions";
 
 export async function moderationRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authMiddleware);
 
-  // Create a moderation queue item (report)
+  // Create a moderation queue item (report) - any member can report
   app.post("/guilds/:guildId/moderation/queue", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
     const body = z
@@ -30,6 +32,7 @@ export async function moderationRoutes(app: FastifyInstance) {
   // Get queue items
   app.get("/guilds/:guildId/moderation/queue", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MODERATE_MEMBERS);
     const query = z
       .object({ status: z.string().optional() })
       .parse(request.query);
@@ -40,7 +43,8 @@ export async function moderationRoutes(app: FastifyInstance) {
 
   // Resolve a queue item
   app.post("/guilds/:guildId/moderation/queue/:itemId/resolve", async (request, reply) => {
-    const { itemId } = request.params as { itemId: string };
+    const { guildId, itemId } = request.params as { guildId: string; itemId: string };
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MODERATE_MEMBERS);
     const body = z
       .object({
         action: z.enum(["approved", "rejected", "escalated"]),
@@ -60,6 +64,7 @@ export async function moderationRoutes(app: FastifyInstance) {
   // Get moderator analytics
   app.get("/guilds/:guildId/moderation/analytics", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MODERATE_MEMBERS);
     const analytics = await moderationQueueService.getModeratorAnalytics(guildId);
     return reply.send(analytics);
   });

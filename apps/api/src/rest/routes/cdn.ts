@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { env } from "../../config/env.js";
+import { authMiddleware } from "../../middleware/auth.js";
 import { Client as MinioClient } from "minio";
 import crypto from "crypto";
 
@@ -59,8 +60,8 @@ function serveObject(objectKey: string, fallbackContentType = "application/octet
 
 /** CDN routes — public, no auth required. Serves files from MinIO. */
 export async function cdnRoutes(app: FastifyInstance) {
-  // Upload file
-  app.post("/upload", async (request, reply) => {
+  // Upload file (auth required)
+  app.post("/upload", { preHandler: [authMiddleware] }, async (request, reply) => {
     await ensureBucketOnce();
     const file = await request.file();
     if (!file) {

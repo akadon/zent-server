@@ -23,9 +23,35 @@ const DEFAULTS: Record<string, RateLimitConfig> = {
   reaction: { max: 10, window: 5, keyPrefix: "rl:react" },
 };
 
+// Lua script for atomic sliding window rate limiting
+const RATE_LIMIT_SCRIPT = `
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window_start = tonumber(ARGV[2])
+local max_requests = tonumber(ARGV[3])
+local ttl = tonumber(ARGV[4])
+local member = ARGV[5]
+
+redis.call('ZREMRANGEBYSCORE', key, 0, window_start)
+local count = redis.call('ZCARD', key)
+
+if count < max_requests then
+  redis.call('ZADD', key, now, member)
+  redis.call('EXPIRE', key, ttl)
+  return {1, max_requests - count - 1, 0}
+else
+  local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+  local oldest_time = 0
+  if #oldest >= 2 then
+    oldest_time = tonumber(oldest[2])
+  end
+  return {0, 0, oldest_time}
+end
+`;
+
 /**
  * Sliding window rate limiter using Redis.
- * Uses sorted sets with timestamps for accurate sliding windows.
+ * Uses a Lua script for atomic check-and-increment to prevent race conditions.
  */
 async function checkRateLimit(
   identifier: string,
@@ -34,32 +60,31 @@ async function checkRateLimit(
   const key = `${config.keyPrefix}:${identifier}`;
   const now = Date.now();
   const windowStart = now - config.window * 1000;
+  const member = `${now}:${Math.random()}`;
 
-  const pipeline = redis.pipeline();
-  // Remove entries outside the window
-  pipeline.zremrangebyscore(key, 0, windowStart);
-  // Count current entries
-  pipeline.zcard(key);
-  // Add current request
-  pipeline.zadd(key, now, `${now}:${Math.random()}`);
-  // Set expiry on the key
-  pipeline.expire(key, config.window + 1);
+  const result = await redis.eval(
+    RATE_LIMIT_SCRIPT,
+    1,
+    key,
+    now.toString(),
+    windowStart.toString(),
+    config.max.toString(),
+    (config.window + 1).toString(),
+    member
+  ) as [number, number, number];
 
-  const results = await pipeline.exec();
-  const count = (results?.[1]?.[1] as number) ?? 0;
+  const [allowed, remaining, oldestTime] = result;
 
-  if (count >= config.max) {
-    // Find the oldest entry to calculate reset time
-    const oldest = await redis.zrange(key, 0, 0, "WITHSCORES");
-    const oldestTime = oldest.length >= 2 ? parseInt(oldest[1]!, 10) : now;
-    const resetAfter = Math.max(0, config.window * 1000 - (now - oldestTime));
-
+  if (!allowed) {
+    const resetAfter = oldestTime > 0
+      ? Math.max(0, config.window * 1000 - (now - oldestTime))
+      : config.window * 1000;
     return { allowed: false, remaining: 0, resetAfter };
   }
 
   return {
     allowed: true,
-    remaining: config.max - count - 1,
+    remaining,
     resetAfter: config.window * 1000,
   };
 }

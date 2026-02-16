@@ -7,6 +7,7 @@ import { generateSnowflake } from "@yxc/snowflake";
 
 const SALT_ROUNDS = 12;
 const TOKEN_EXPIRY = "7d";
+const MFA_TICKET_EXPIRY = "5m";
 
 export interface TokenPayload {
   userId: string;
@@ -28,6 +29,20 @@ export function generateToken(userId: string): string {
 
 export function verifyToken(token: string): TokenPayload {
   return jwt.verify(token, env.AUTH_SECRET) as TokenPayload;
+}
+
+export function generateMfaTicket(userId: string): string {
+  return jwt.sign({ userId, mfa: true }, env.AUTH_SECRET, {
+    expiresIn: MFA_TICKET_EXPIRY,
+  });
+}
+
+export function verifyMfaTicket(ticket: string): TokenPayload {
+  const payload = jwt.verify(ticket, env.AUTH_SECRET) as TokenPayload & { mfa?: boolean };
+  if (!payload.mfa) {
+    throw new ApiError(400, "Invalid MFA ticket");
+  }
+  return { userId: payload.userId };
 }
 
 export async function register(email: string, username: string, password: string) {
@@ -101,9 +116,22 @@ export async function login(email: string, password: string) {
     throw new ApiError(401, "Invalid email or password");
   }
 
+  // If MFA is enabled, return a short-lived ticket instead of a full token
+  if (user.mfaEnabled) {
+    const ticket = generateMfaTicket(user.id);
+    return {
+      mfa: true,
+      ticket,
+      token: null,
+      user: null,
+    };
+  }
+
   const token = generateToken(user.id);
 
   return {
+    mfa: false,
+    ticket: null,
     token,
     user: {
       id: user.id,

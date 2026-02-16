@@ -7,6 +7,10 @@ import { db } from "../../db/index.js";
 import { messages, channels } from "../../db/schema.js";
 import { eq, and, ilike, lt, desc, sql } from "drizzle-orm";
 
+function escapeLike(str: string): string {
+  return str.replace(/[%_\\]/g, "\\$&");
+}
+
 export default async function searchRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authMiddleware);
   app.addHook("preHandler", createRateLimiter("global"));
@@ -34,7 +38,7 @@ export default async function searchRoutes(app: FastifyInstance) {
     const conditions = [
       eq(channels.guildId, guildId),
       eq(messages.channelId, channels.id),
-      ilike(messages.content, `%${query.q}%`),
+      ilike(messages.content, `%${escapeLike(query.q)}%`),
     ];
 
     if (query.channelId) {
@@ -57,7 +61,7 @@ export default async function searchRoutes(app: FastifyInstance) {
       .where(
         and(
           eq(channels.guildId, guildId),
-          ilike(messages.content, `%${query.q}%`),
+          ilike(messages.content, `%${escapeLike(query.q)}%`),
           ...(query.channelId ? [eq(messages.channelId, query.channelId)] : []),
           ...(query.authorId ? [eq(messages.authorId, query.authorId)] : []),
         )
