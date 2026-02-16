@@ -1,4 +1,4 @@
-import { eq, and, lt, desc } from "drizzle-orm";
+import { eq, and, lt, desc, inArray } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
@@ -41,7 +41,7 @@ export async function createMessage(
   return getMessageWithAuthor(id);
 }
 
-export async function getMessageWithAuthor(messageId: string): Promise<Record<string, any> | null> {
+export async function getMessageWithAuthor(messageId: string, depth: number = 0): Promise<Record<string, any> | null> {
   const [message] = await db
     .select()
     .from(schema.messages)
@@ -62,21 +62,29 @@ export async function getMessageWithAuthor(messageId: string): Promise<Record<st
     .where(eq(schema.users.id, message.authorId))
     .limit(1);
 
+  const resolvedAuthor = author ?? {
+    id: message.authorId,
+    username: "Deleted User",
+    displayName: null,
+    avatar: null,
+    status: "offline",
+  };
+
   const attachments = await db
     .select()
     .from(schema.messageAttachments)
     .where(eq(schema.messageAttachments.messageId, messageId));
 
-  // Get referenced message if exists
+  // Get referenced message if exists (limit recursion to depth 1)
   let referencedMessage = null;
-  if (message.referencedMessageId) {
-    referencedMessage = await getMessageWithAuthor(message.referencedMessageId);
+  if (message.referencedMessageId && depth < 1) {
+    referencedMessage = await getMessageWithAuthor(message.referencedMessageId, depth + 1);
   }
 
   return {
     id: message.id,
     channelId: message.channelId,
-    author: author!,
+    author: resolvedAuthor,
     content: message.content,
     type: message.type,
     flags: message.flags,
@@ -98,11 +106,21 @@ export async function getChannelMessages(
   channelId: string,
   options?: { before?: string; limit?: number }
 ) {
-  const limit = Math.min(options?.limit ?? 50, 100);
+  const limitNum = Math.min(options?.limit ?? 50, 100);
 
-  let query = db
-    .select()
+  const rows = await db
+    .select({
+      message: schema.messages,
+      author: {
+        id: schema.users.id,
+        username: schema.users.username,
+        displayName: schema.users.displayName,
+        avatar: schema.users.avatar,
+        status: schema.users.status,
+      },
+    })
     .from(schema.messages)
+    .leftJoin(schema.users, eq(schema.messages.authorId, schema.users.id))
     .where(
       options?.before
         ? and(
@@ -112,18 +130,107 @@ export async function getChannelMessages(
         : eq(schema.messages.channelId, channelId)
     )
     .orderBy(desc(schema.messages.id))
-    .limit(limit);
+    .limit(limitNum);
 
-  const messageList = await query;
+  if (rows.length === 0) return [];
 
-  // Fetch authors and attachments for all messages
-  const result = [];
-  for (const msg of messageList) {
-    const full = await getMessageWithAuthor(msg.id);
-    if (full) result.push(full);
+  // Batch fetch attachments for all messages
+  const messageIds = rows.map((r) => r.message.id);
+  const allAttachments = await db
+    .select()
+    .from(schema.messageAttachments)
+    .where(inArray(schema.messageAttachments.messageId, messageIds));
+
+  const attachmentsByMessage = new Map<string, typeof allAttachments>();
+  for (const att of allAttachments) {
+    const list = attachmentsByMessage.get(att.messageId) ?? [];
+    list.push(att);
+    attachmentsByMessage.set(att.messageId, list);
   }
 
-  return result;
+  // Batch fetch referenced messages (one level only)
+  const refIds = rows
+    .map((r) => r.message.referencedMessageId)
+    .filter((id): id is string => id !== null);
+
+  const referencedMessages = new Map<string, Record<string, any>>();
+  if (refIds.length > 0) {
+    const refRows = await db
+      .select({
+        message: schema.messages,
+        author: {
+          id: schema.users.id,
+          username: schema.users.username,
+          displayName: schema.users.displayName,
+          avatar: schema.users.avatar,
+          status: schema.users.status,
+        },
+      })
+      .from(schema.messages)
+      .leftJoin(schema.users, eq(schema.messages.authorId, schema.users.id))
+      .where(inArray(schema.messages.id, refIds));
+
+    for (const ref of refRows) {
+      const refAuthor = ref.author ?? {
+        id: ref.message.authorId,
+        username: "Deleted User",
+        displayName: null,
+        avatar: null,
+        status: "offline",
+      };
+      referencedMessages.set(ref.message.id, {
+        id: ref.message.id,
+        channelId: ref.message.channelId,
+        author: refAuthor,
+        content: ref.message.content,
+        type: ref.message.type,
+        flags: ref.message.flags,
+        tts: ref.message.tts,
+        mentionEveryone: ref.message.mentionEveryone,
+        pinned: ref.message.pinned,
+        editedTimestamp: ref.message.editedTimestamp?.toISOString() ?? null,
+        referencedMessageId: ref.message.referencedMessageId,
+        referencedMessage: null,
+        webhookId: ref.message.webhookId,
+        attachments: [],
+        embeds: [],
+        reactions: [],
+        createdAt: ref.message.createdAt.toISOString(),
+      });
+    }
+  }
+
+  return rows.map((row) => {
+    const author = row.author ?? {
+      id: row.message.authorId,
+      username: "Deleted User",
+      displayName: null,
+      avatar: null,
+      status: "offline",
+    };
+
+    return {
+      id: row.message.id,
+      channelId: row.message.channelId,
+      author,
+      content: row.message.content,
+      type: row.message.type,
+      flags: row.message.flags,
+      tts: row.message.tts,
+      mentionEveryone: row.message.mentionEveryone,
+      pinned: row.message.pinned,
+      editedTimestamp: row.message.editedTimestamp?.toISOString() ?? null,
+      referencedMessageId: row.message.referencedMessageId,
+      referencedMessage: row.message.referencedMessageId
+        ? referencedMessages.get(row.message.referencedMessageId) ?? null
+        : null,
+      webhookId: row.message.webhookId,
+      attachments: attachmentsByMessage.get(row.message.id) ?? [],
+      embeds: [],
+      reactions: [],
+      createdAt: row.message.createdAt.toISOString(),
+    };
+  });
 }
 
 export async function updateMessage(
@@ -189,16 +296,119 @@ export async function unpinMessage(messageId: string) {
 }
 
 export async function getPinnedMessages(channelId: string) {
-  const pinned = await db
-    .select()
+  const rows = await db
+    .select({
+      message: schema.messages,
+      author: {
+        id: schema.users.id,
+        username: schema.users.username,
+        displayName: schema.users.displayName,
+        avatar: schema.users.avatar,
+        status: schema.users.status,
+      },
+    })
     .from(schema.messages)
+    .leftJoin(schema.users, eq(schema.messages.authorId, schema.users.id))
     .where(and(eq(schema.messages.channelId, channelId), eq(schema.messages.pinned, true)))
     .orderBy(desc(schema.messages.id));
 
-  const result = [];
-  for (const msg of pinned) {
-    const full = await getMessageWithAuthor(msg.id);
-    if (full) result.push(full);
+  if (rows.length === 0) return [];
+
+  // Batch fetch attachments for all pinned messages
+  const messageIds = rows.map((r) => r.message.id);
+  const allAttachments = await db
+    .select()
+    .from(schema.messageAttachments)
+    .where(inArray(schema.messageAttachments.messageId, messageIds));
+
+  const attachmentsByMessage = new Map<string, typeof allAttachments>();
+  for (const att of allAttachments) {
+    const list = attachmentsByMessage.get(att.messageId) ?? [];
+    list.push(att);
+    attachmentsByMessage.set(att.messageId, list);
   }
-  return result;
+
+  // Batch fetch referenced messages (one level only)
+  const refIds = rows
+    .map((r) => r.message.referencedMessageId)
+    .filter((id): id is string => id !== null);
+
+  const referencedMessages = new Map<string, Record<string, any>>();
+  if (refIds.length > 0) {
+    const refRows = await db
+      .select({
+        message: schema.messages,
+        author: {
+          id: schema.users.id,
+          username: schema.users.username,
+          displayName: schema.users.displayName,
+          avatar: schema.users.avatar,
+          status: schema.users.status,
+        },
+      })
+      .from(schema.messages)
+      .leftJoin(schema.users, eq(schema.messages.authorId, schema.users.id))
+      .where(inArray(schema.messages.id, refIds));
+
+    for (const ref of refRows) {
+      const refAuthor = ref.author ?? {
+        id: ref.message.authorId,
+        username: "Deleted User",
+        displayName: null,
+        avatar: null,
+        status: "offline",
+      };
+      referencedMessages.set(ref.message.id, {
+        id: ref.message.id,
+        channelId: ref.message.channelId,
+        author: refAuthor,
+        content: ref.message.content,
+        type: ref.message.type,
+        flags: ref.message.flags,
+        tts: ref.message.tts,
+        mentionEveryone: ref.message.mentionEveryone,
+        pinned: ref.message.pinned,
+        editedTimestamp: ref.message.editedTimestamp?.toISOString() ?? null,
+        referencedMessageId: ref.message.referencedMessageId,
+        referencedMessage: null,
+        webhookId: ref.message.webhookId,
+        attachments: [],
+        embeds: [],
+        reactions: [],
+        createdAt: ref.message.createdAt.toISOString(),
+      });
+    }
+  }
+
+  return rows.map((row) => {
+    const author = row.author ?? {
+      id: row.message.authorId,
+      username: "Deleted User",
+      displayName: null,
+      avatar: null,
+      status: "offline",
+    };
+
+    return {
+      id: row.message.id,
+      channelId: row.message.channelId,
+      author,
+      content: row.message.content,
+      type: row.message.type,
+      flags: row.message.flags,
+      tts: row.message.tts,
+      mentionEveryone: row.message.mentionEveryone,
+      pinned: row.message.pinned,
+      editedTimestamp: row.message.editedTimestamp?.toISOString() ?? null,
+      referencedMessageId: row.message.referencedMessageId,
+      referencedMessage: row.message.referencedMessageId
+        ? referencedMessages.get(row.message.referencedMessageId) ?? null
+        : null,
+      webhookId: row.message.webhookId,
+      attachments: attachmentsByMessage.get(row.message.id) ?? [],
+      embeds: [],
+      reactions: [],
+      createdAt: row.message.createdAt.toISOString(),
+    };
+  });
 }

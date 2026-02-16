@@ -8,7 +8,6 @@ import { verifyToken, getUserById } from "../services/auth.service.js";
 import { getUserGuilds } from "../services/guild.service.js";
 import { getReadStates } from "../services/readstate.service.js";
 import { getRelationships, getUserDMChannels } from "../services/relationship.service.js";
-import * as voicestateService from "../services/voicestate.service.js";
 import { GatewayOp } from "@yxc/gateway-types";
 import type {
   GatewayPayload,
@@ -16,7 +15,6 @@ import type {
   HelloPayload,
   ReadyPayload,
   PresenceUpdatePayload,
-  VoiceStateUpdatePayload,
   RequestGuildMembersPayload,
 } from "@yxc/gateway-types";
 import { GatewayIntentBits } from "@yxc/gateway-types";
@@ -217,12 +215,6 @@ export function createGateway(httpServer: HttpServer) {
             }
             break;
 
-          case GatewayOp.VOICE_STATE_UPDATE:
-            if (session) {
-              await handleVoiceStateUpdate(session, socket, payload.d as VoiceStateUpdatePayload);
-            }
-            break;
-
           case GatewayOp.RESUME:
             await handleResume(socket, payload.d as { token: string; sessionId: string; seq: number });
             break;
@@ -263,19 +255,6 @@ export function createGateway(httpServer: HttpServer) {
               customStatus: null,
             },
           });
-        }
-
-        // Clean up voice state
-        for (const guildId of session.guilds) {
-          const previous = await voicestateService.leaveVoiceChannel(session.userId, guildId);
-          if (previous) {
-            io.to(`guild:${guildId}`).emit("message", {
-              op: GatewayOp.DISPATCH,
-              t: "VOICE_STATE_UPDATE",
-              s: 0,
-              d: { userId: session.userId, guildId, channelId: null, sessionId: session.sessionId },
-            });
-          }
         }
 
         // Keep session in index for 5 minutes for resume
@@ -440,58 +419,6 @@ export function createGateway(httpServer: HttpServer) {
             customStatus: data.customStatus ?? null,
             activities,
             clientStatus: { web: data.status },
-          },
-        });
-      }
-    }
-
-    async function handleVoiceStateUpdate(
-      session: GatewaySession,
-      socket: ReturnType<typeof io.sockets.sockets.get> extends infer S ? NonNullable<S> : never,
-      data: VoiceStateUpdatePayload
-    ) {
-      if (data.channelId === null) {
-        // Leave voice
-        const previous = await voicestateService.leaveVoiceChannel(session.userId, data.guildId);
-        if (previous) {
-          io.to(`guild:${data.guildId}`).emit("message", {
-            op: GatewayOp.DISPATCH,
-            t: "VOICE_STATE_UPDATE",
-            s: 0,
-            d: {
-              userId: session.userId,
-              guildId: data.guildId,
-              channelId: null,
-              sessionId: session.sessionId,
-            },
-          });
-        }
-      } else {
-        // Join voice
-        const state = await voicestateService.joinVoiceChannel(
-          session.userId,
-          data.guildId,
-          data.channelId,
-          session.sessionId,
-          { selfMute: data.selfMute, selfDeaf: data.selfDeaf }
-        );
-
-        io.to(`guild:${data.guildId}`).emit("message", {
-          op: GatewayOp.DISPATCH,
-          t: "VOICE_STATE_UPDATE",
-          s: 0,
-          d: state,
-        });
-
-        // Send voice server info back to the requesting client
-        socket.emit("message", {
-          op: GatewayOp.DISPATCH,
-          t: "VOICE_SERVER_UPDATE",
-          s: 0,
-          d: {
-            guildId: data.guildId,
-            token: state.livekitToken,
-            endpoint: state.livekitUrl,
           },
         });
       }
