@@ -10,7 +10,6 @@ import * as webhookService from "../../services/webhook.service.js";
 import * as emojiService from "../../services/emoji.service.js";
 import * as threadService from "../../services/thread.service.js";
 import * as auditlogService from "../../services/auditlog.service.js";
-import * as voicestateService from "../../services/voicestate.service.js";
 import * as permissionService from "../../services/permission.service.js";
 import * as guildTemplateService from "../../services/guild-template.service.js";
 import * as channelFollowService from "../../services/channel-follow.service.js";
@@ -72,6 +71,8 @@ export async function guildRoutes(app: FastifyInstance) {
         rulesChannelId: z.string().optional(),
       })
       .parse(request.body);
+
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_GUILD);
 
     const guild = await guildService.updateGuild(guildId, request.userId, body);
     await dispatchGuild(guildId, "GUILD_UPDATE", guild);
@@ -260,6 +261,8 @@ export async function guildRoutes(app: FastifyInstance) {
       })
       .parse(request.body ?? {});
 
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_ROLES);
+
     const role = await roleService.createRole(guildId, body);
     await dispatchGuild(guildId, "GUILD_ROLE_CREATE", { guildId, role });
     await auditlogService.createAuditLogEntry(guildId, request.userId, AuditLogActionType.ROLE_CREATE, role.id);
@@ -279,6 +282,8 @@ export async function guildRoutes(app: FastifyInstance) {
       })
       .parse(request.body);
 
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_ROLES);
+
     const role = await roleService.updateRole(roleId, body);
     await dispatchGuild(guildId, "GUILD_ROLE_UPDATE", { guildId, role });
     await auditlogService.createAuditLogEntry(guildId, request.userId, AuditLogActionType.ROLE_UPDATE, roleId);
@@ -287,6 +292,7 @@ export async function guildRoutes(app: FastifyInstance) {
 
   app.delete("/guilds/:guildId/roles/:roleId", async (request, reply) => {
     const { guildId, roleId } = request.params as { guildId: string; roleId: string };
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_ROLES);
     await roleService.deleteRole(roleId, guildId);
     await dispatchGuild(guildId, "GUILD_ROLE_DELETE", { guildId, roleId });
     await auditlogService.createAuditLogEntry(guildId, request.userId, AuditLogActionType.ROLE_DELETE, roleId);
@@ -627,54 +633,6 @@ export async function guildRoutes(app: FastifyInstance) {
 
     const entries = await auditlogService.getAuditLog(guildId, query);
     return reply.send({ auditLogEntries: entries });
-  });
-
-  // ── Voice ──
-
-  app.post("/guilds/:guildId/voice/:channelId/join", async (request, reply) => {
-    const { guildId, channelId } = request.params as { guildId: string; channelId: string };
-    const body = z
-      .object({
-        selfMute: z.boolean().optional(),
-        selfDeaf: z.boolean().optional(),
-      })
-      .parse(request.body ?? {});
-
-    const state = await voicestateService.joinVoiceChannel(
-      request.userId,
-      guildId,
-      channelId,
-      crypto.randomUUID(),
-      body
-    );
-
-    await dispatchGuild(guildId, "VOICE_STATE_UPDATE", state);
-
-    return reply.send({
-      voiceState: state,
-      livekitToken: state.livekitToken,
-      livekitUrl: state.livekitUrl,
-    });
-  });
-
-  app.post("/guilds/:guildId/voice/leave", async (request, reply) => {
-    const { guildId } = request.params as { guildId: string };
-    const previous = await voicestateService.leaveVoiceChannel(request.userId, guildId);
-    if (previous) {
-      await dispatchGuild(guildId, "VOICE_STATE_UPDATE", {
-        userId: request.userId,
-        guildId,
-        channelId: null,
-        sessionId: previous.sessionId,
-      });
-    }
-    return reply.status(204).send();
-  });
-
-  app.get("/guilds/:guildId/voice-states", async (request, reply) => {
-    const { guildId } = request.params as { guildId: string };
-    const states = await voicestateService.getGuildVoiceStates(guildId);
-    return reply.send(states);
   });
 
   // ── Permission Overwrites ──
@@ -1128,7 +1086,7 @@ export async function guildRoutes(app: FastifyInstance) {
 
     const members = await memberService.getGuildMembers(guildId);
     const channels = await channelService.getGuildChannels(guildId);
-    const voiceStates = await voicestateService.getGuildVoiceStates(guildId);
+    const voiceStates: any[] = [];
 
     // Get online members count
     const presenceCount = members.filter((m) => m.user?.status !== "offline").length;

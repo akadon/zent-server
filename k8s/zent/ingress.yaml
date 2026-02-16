@@ -121,14 +121,6 @@ spec:
                 name: zent-cdn
                 port:
                   number: 4003
-          # Matrix federation
-          - path: /_matrix
-            pathType: Prefix
-            backend:
-              service:
-                name: dendrite
-                port:
-                  number: 8008
           # Health check
           - path: /health
             pathType: Exact

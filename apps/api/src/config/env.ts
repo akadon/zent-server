@@ -17,9 +17,6 @@ const envSchema = z.object({
     .string()
     .transform((v) => v === "true")
     .default("false"),
-  LIVEKIT_URL: z.string().default("ws://localhost:7880"),
-  LIVEKIT_API_KEY: z.string().default("devkey"),
-  LIVEKIT_API_SECRET: z.string().default("devsecret"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
 });
 

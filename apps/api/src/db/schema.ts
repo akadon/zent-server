@@ -9,6 +9,8 @@ import {
   primaryKey,
   index,
   uniqueIndex,
+  serial,
+  unique,
 } from "drizzle-orm/pg-core";
 
 // ── Users ──
@@ -52,7 +54,7 @@ export const guilds = pgTable("guilds", {
   splash: text("splash"),
   ownerId: text("owner_id")
     .notNull()
-    .references(() => users.id),
+    .references(() => users.id, { onDelete: "cascade" }),
   description: text("description"),
   verificationLevel: integer("verification_level").notNull().default(0),
   defaultMessageNotifications: integer("default_message_notifications").notNull().default(0),
@@ -105,7 +107,7 @@ export const messages = pgTable(
       .references(() => channels.id, { onDelete: "cascade" }),
     authorId: text("author_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     content: text("content").notNull().default(""),
     type: integer("type").notNull().default(0),
     flags: integer("flags").notNull().default(0),
@@ -154,7 +156,7 @@ export const members = pgTable(
   {
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     guildId: text("guild_id")
       .notNull()
       .references(() => guilds.id, { onDelete: "cascade" }),
@@ -172,6 +174,7 @@ export const members = pgTable(
   (table) => [
     primaryKey({ columns: [table.userId, table.guildId] }),
     index("members_guild_id_idx").on(table.guildId),
+    index("members_user_id_idx").on(table.userId),
   ]
 );
 
@@ -179,8 +182,12 @@ export const members = pgTable(
 export const memberRoles = pgTable(
   "member_roles",
   {
-    userId: text("user_id").notNull(),
-    guildId: text("guild_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    guildId: text("guild_id")
+      .notNull()
+      .references(() => guilds.id, { onDelete: "cascade" }),
     roleId: text("role_id")
       .notNull()
       .references(() => roles.id, { onDelete: "cascade" }),
@@ -203,7 +210,10 @@ export const permissionOverwrites = pgTable(
     allow: text("allow").notNull().default("0"),
     deny: text("deny").notNull().default("0"),
   },
-  (table) => [primaryKey({ columns: [table.channelId, table.targetId] })]
+  (table) => [
+    primaryKey({ columns: [table.channelId, table.targetId] }),
+    index("permission_overwrites_target_id_idx").on(table.targetId),
+  ]
 );
 
 // ── Relationships (friends, blocks) ──
@@ -212,14 +222,18 @@ export const relationships = pgTable(
   {
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     targetId: text("target_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     type: integer("type").notNull(), // 1=friend, 2=blocked, 3=incoming, 4=outgoing
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [primaryKey({ columns: [table.userId, table.targetId] })]
+  (table) => [
+    primaryKey({ columns: [table.userId, table.targetId] }),
+    index("relationships_user_id_idx").on(table.userId),
+    index("relationships_target_id_idx").on(table.targetId),
+  ]
 );
 
 // ── DM Channels ──
@@ -231,7 +245,7 @@ export const dmChannels = pgTable(
       .references(() => channels.id, { onDelete: "cascade" }),
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
   },
   (table) => [
     primaryKey({ columns: [table.channelId, table.userId] }),
@@ -240,22 +254,28 @@ export const dmChannels = pgTable(
 );
 
 // ── Invites ──
-export const invites = pgTable("invites", {
-  code: text("code").primaryKey(),
-  guildId: text("guild_id")
-    .notNull()
-    .references(() => guilds.id, { onDelete: "cascade" }),
-  channelId: text("channel_id")
-    .notNull()
-    .references(() => channels.id, { onDelete: "cascade" }),
-  inviterId: text("inviter_id").references(() => users.id),
-  maxUses: integer("max_uses").notNull().default(0),
-  uses: integer("uses").notNull().default(0),
-  maxAge: integer("max_age").notNull().default(86400), // 24h default
-  temporary: boolean("temporary").notNull().default(false),
-  expiresAt: timestamp("expires_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const invites = pgTable(
+  "invites",
+  {
+    code: text("code").primaryKey(),
+    guildId: text("guild_id")
+      .notNull()
+      .references(() => guilds.id, { onDelete: "cascade" }),
+    channelId: text("channel_id")
+      .notNull()
+      .references(() => channels.id, { onDelete: "cascade" }),
+    inviterId: text("inviter_id").references(() => users.id, { onDelete: "cascade" }),
+    maxUses: integer("max_uses").notNull().default(0),
+    uses: integer("uses").notNull().default(0),
+    maxAge: integer("max_age").notNull().default(86400), // 24h default
+    temporary: boolean("temporary").notNull().default(false),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("invites_guild_id_idx").on(table.guildId),
+  ]
+);
 
 // ── Bans ──
 export const bans = pgTable(
@@ -266,9 +286,9 @@ export const bans = pgTable(
       .references(() => guilds.id, { onDelete: "cascade" }),
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     reason: text("reason"),
-    bannedBy: text("banned_by").references(() => users.id),
+    bannedBy: text("banned_by").references(() => users.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [primaryKey({ columns: [table.guildId, table.userId] })]
@@ -324,7 +344,7 @@ export const messageReactions = pgTable(
       .references(() => messages.id, { onDelete: "cascade" }),
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     emojiName: text("emoji_name").notNull(),
     emojiId: text("emoji_id"),
   },
@@ -332,6 +352,7 @@ export const messageReactions = pgTable(
     primaryKey({
       columns: [table.messageId, table.userId, table.emojiName, table.emojiId],
     }),
+    index("message_reactions_user_id_idx").on(table.userId),
   ]
 );
 
@@ -344,7 +365,7 @@ export const emojis = pgTable(
       .notNull()
       .references(() => guilds.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
-    creatorId: text("creator_id").references(() => users.id),
+    creatorId: text("creator_id").references(() => users.id, { onDelete: "cascade" }),
     animated: boolean("animated").notNull().default(false),
     available: boolean("available").notNull().default(true),
   },
@@ -366,7 +387,7 @@ export const webhooks = pgTable(
     name: text("name"),
     avatar: text("avatar"),
     token: text("token"),
-    creatorId: text("creator_id").references(() => users.id),
+    creatorId: text("creator_id").references(() => users.id, { onDelete: "cascade" }),
   },
   (table) => [index("webhooks_channel_id_idx").on(table.channelId)]
 );
@@ -377,7 +398,7 @@ export const readStates = pgTable(
   {
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     channelId: text("channel_id")
       .notNull()
       .references(() => channels.id, { onDelete: "cascade" }),
@@ -385,32 +406,6 @@ export const readStates = pgTable(
     mentionCount: integer("mention_count").notNull().default(0),
   },
   (table) => [primaryKey({ columns: [table.userId, table.channelId] })]
-);
-
-// ── Voice States ──
-export const voiceStates = pgTable(
-  "voice_states",
-  {
-    userId: text("user_id")
-      .notNull()
-      .references(() => users.id),
-    guildId: text("guild_id")
-      .notNull()
-      .references(() => guilds.id, { onDelete: "cascade" }),
-    channelId: text("channel_id").references(() => channels.id),
-    sessionId: text("session_id").notNull(),
-    deaf: boolean("deaf").notNull().default(false),
-    mute: boolean("mute").notNull().default(false),
-    selfDeaf: boolean("self_deaf").notNull().default(false),
-    selfMute: boolean("self_mute").notNull().default(false),
-    selfStream: boolean("self_stream").notNull().default(false),
-    selfVideo: boolean("self_video").notNull().default(false),
-    suppress: boolean("suppress").notNull().default(false),
-  },
-  (table) => [
-    primaryKey({ columns: [table.userId, table.guildId] }),
-    index("voice_states_channel_id_idx").on(table.channelId),
-  ]
 );
 
 // ── Audit Log ──
@@ -421,7 +416,7 @@ export const auditLogEntries = pgTable(
     guildId: text("guild_id")
       .notNull()
       .references(() => guilds.id, { onDelete: "cascade" }),
-    userId: text("user_id").references(() => users.id),
+    userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
     targetId: text("target_id"),
     actionType: integer("action_type").notNull(),
     reason: text("reason"),
@@ -475,7 +470,7 @@ export const pollVotes = pgTable(
       .references(() => pollOptions.id, { onDelete: "cascade" }),
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
   },
   (table) => [
     primaryKey({ columns: [table.pollId, table.optionId, table.userId] }),
@@ -493,7 +488,7 @@ export const scheduledMessages = pgTable(
       .references(() => channels.id, { onDelete: "cascade" }),
     authorId: text("author_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     content: text("content").notNull(),
     scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
     sent: boolean("sent").notNull().default(false),
@@ -512,7 +507,7 @@ export const notificationLog = pgTable(
     id: text("id").primaryKey(),
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     type: text("type").notNull(), // "mention", "reply", "dm", "friend_request"
     sourceGuildId: text("source_guild_id"),
     sourceChannelId: text("source_channel_id"),
@@ -539,7 +534,7 @@ export const serverBackups = pgTable(
       .references(() => guilds.id, { onDelete: "cascade" }),
     createdBy: text("created_by")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     data: jsonb("data").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -556,12 +551,12 @@ export const banAppeals = pgTable(
       .references(() => guilds.id, { onDelete: "cascade" }),
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     reason: text("reason").notNull(),
     status: text("status", { enum: ["pending", "accepted", "rejected"] })
       .notNull()
       .default("pending"),
-    moderatorId: text("moderator_id").references(() => users.id),
+    moderatorId: text("moderator_id").references(() => users.id, { onDelete: "set null" }),
     moderatorReason: text("moderator_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
@@ -593,7 +588,7 @@ export const threadMembers = pgTable(
       .references(() => channels.id, { onDelete: "cascade" }),
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     joinTimestamp: timestamp("join_timestamp", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [primaryKey({ columns: [table.channelId, table.userId] })]
@@ -612,11 +607,11 @@ export const moderationQueue = pgTable(
     reason: text("reason").notNull(),
     reportedBy: text("reported_by")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     status: text("status", { enum: ["pending", "approved", "rejected", "escalated"] })
       .notNull()
       .default("pending"),
-    moderatorId: text("moderator_id").references(() => users.id),
+    moderatorId: text("moderator_id").references(() => users.id, { onDelete: "set null" }),
     moderatorNote: text("moderator_note"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
@@ -631,9 +626,10 @@ export const moderationQueue = pgTable(
 export const notificationSettings = pgTable(
   "notification_settings",
   {
+    id: serial("id").primaryKey(),
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     guildId: text("guild_id").references(() => guilds.id, { onDelete: "cascade" }),
     channelId: text("channel_id").references(() => channels.id, { onDelete: "cascade" }),
     level: text("level", { enum: ["all", "mentions", "none"] }).notNull().default("all"),
@@ -643,8 +639,9 @@ export const notificationSettings = pgTable(
     muteUntil: timestamp("mute_until", { withTimezone: true }),
   },
   (table) => [
-    primaryKey({ columns: [table.userId, table.guildId, table.channelId] }),
+    unique("notification_settings_user_guild_channel_unique").on(table.userId, table.guildId, table.channelId),
     index("notification_settings_user_idx").on(table.userId),
+    index("notification_settings_guild_idx").on(table.guildId),
   ]
 );
 
@@ -663,7 +660,7 @@ export const threadTemplates = pgTable(
     content: text("content").notNull(),
     createdBy: text("created_by")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -748,7 +745,7 @@ export const passkeyCredentials = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    credentialId: text("credential_id").notNull().unique(),
+    credentialId: text("credential_id").notNull(),
     publicKey: text("public_key").notNull(),
     counter: integer("counter").notNull().default(0),
     deviceType: text("device_type"),
@@ -780,6 +777,7 @@ export const verificationCodes = pgTable(
   (table) => [
     index("verification_codes_user_idx").on(table.userId),
     index("verification_codes_expires_idx").on(table.expiresAt),
+    uniqueIndex("verification_codes_code_idx").on(table.code),
   ]
 );
 
@@ -792,7 +790,7 @@ export const guildEvents = pgTable(
       .notNull()
       .references(() => guilds.id, { onDelete: "cascade" }),
     channelId: text("channel_id").references(() => channels.id, { onDelete: "set null" }),
-    creatorId: text("creator_id").references(() => users.id),
+    creatorId: text("creator_id").references(() => users.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description"),
     image: text("image"),
@@ -832,34 +830,13 @@ export const guildEventUsers = pgTable(
   (table) => [
     primaryKey({ columns: [table.eventId, table.userId] }),
     index("guild_event_users_event_idx").on(table.eventId),
+    index("guild_event_users_user_idx").on(table.userId),
   ]
 );
 
 // ══════════════════════════════════════════════════════════════════════════════
 // NEW TABLES - P1 High Priority Features
 // ══════════════════════════════════════════════════════════════════════════════
-
-// ── Stage Instances ──
-export const stageInstances = pgTable(
-  "stage_instances",
-  {
-    id: text("id").primaryKey(),
-    guildId: text("guild_id")
-      .notNull()
-      .references(() => guilds.id, { onDelete: "cascade" }),
-    channelId: text("channel_id")
-      .notNull()
-      .references(() => channels.id, { onDelete: "cascade" }),
-    topic: text("topic").notNull(),
-    privacyLevel: integer("privacy_level").notNull().default(2), // 1=public, 2=guild_only
-    guildScheduledEventId: text("guild_scheduled_event_id"),
-    discoverableDisabled: boolean("discoverable_disabled").notNull().default(false),
-  },
-  (table) => [
-    index("stage_instances_guild_idx").on(table.guildId),
-    uniqueIndex("stage_instances_channel_idx").on(table.channelId),
-  ]
-);
 
 // ── Applications (Bots) ──
 export const applications = pgTable(
@@ -873,8 +850,8 @@ export const applications = pgTable(
     botRequireCodeGrant: boolean("bot_require_code_grant").notNull().default(false),
     ownerId: text("owner_id")
       .notNull()
-      .references(() => users.id),
-    botUserId: text("bot_user_id").references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
+    botUserId: text("bot_user_id").references(() => users.id, { onDelete: "cascade" }),
     verifyKey: text("verify_key").notNull(),
     flags: integer("flags").notNull().default(0),
     interactionsEndpointUrl: text("interactions_endpoint_url"),
@@ -944,11 +921,11 @@ export const interactions = pgTable(
       .notNull()
       .references(() => applications.id, { onDelete: "cascade" }),
     type: integer("type").notNull(), // 1=Ping, 2=ApplicationCommand, 3=MessageComponent, 4=Autocomplete, 5=ModalSubmit
-    guildId: text("guild_id").references(() => guilds.id),
-    channelId: text("channel_id").references(() => channels.id),
+    guildId: text("guild_id").references(() => guilds.id, { onDelete: "cascade" }),
+    channelId: text("channel_id").references(() => channels.id, { onDelete: "cascade" }),
     userId: text("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     token: text("token").notNull(),
     data: jsonb("data"),
     version: integer("version").notNull().default(1),
@@ -978,7 +955,7 @@ export const stickers = pgTable(
     type: integer("type").notNull(), // 1=standard, 2=guild
     formatType: integer("format_type").notNull(), // 1=png, 2=apng, 3=lottie, 4=gif
     available: boolean("available").notNull().default(true),
-    userId: text("user_id").references(() => users.id), // Creator
+    userId: text("user_id").references(() => users.id, { onDelete: "cascade" }), // Creator
     sortValue: integer("sort_value"),
   },
   (table) => [index("stickers_guild_idx").on(table.guildId)]
@@ -998,40 +975,6 @@ export const messageStickers = pgTable(
   (table) => [primaryKey({ columns: [table.messageId, table.stickerId] })]
 );
 
-// ── Soundboard Sounds ──
-export const soundboardSounds = pgTable(
-  "soundboard_sounds",
-  {
-    id: text("id").primaryKey(),
-    guildId: text("guild_id")
-      .notNull()
-      .references(() => guilds.id, { onDelete: "cascade" }),
-    name: text("name").notNull(),
-    volume: integer("volume").notNull().default(100), // 0-100 as percentage
-    emojiId: text("emoji_id"),
-    emojiName: text("emoji_name"),
-    userId: text("user_id").references(() => users.id), // Creator
-    available: boolean("available").notNull().default(true),
-    soundUrl: text("sound_url").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [index("soundboard_sounds_guild_idx").on(table.guildId)]
-);
-
-// ── User Soundboard Favorites ──
-export const userSoundboardFavorites = pgTable(
-  "user_soundboard_favorites",
-  {
-    userId: text("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    soundId: text("sound_id")
-      .notNull()
-      .references(() => soundboardSounds.id, { onDelete: "cascade" }),
-  },
-  (table) => [primaryKey({ columns: [table.userId, table.soundId] })]
-);
-
 // ── User Activities (Rich Presence) ──
 export const userActivities = pgTable(
   "user_activities",
@@ -1042,28 +985,6 @@ export const userActivities = pgTable(
     activities: jsonb("activities").$type<UserActivity[]>().notNull().default([]),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   }
-);
-
-// ── Voice Channel Spatial Positions ──
-export const voiceSpatialPositions = pgTable(
-  "voice_spatial_positions",
-  {
-    sessionId: text("session_id").notNull(),
-    userId: text("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    channelId: text("channel_id")
-      .notNull()
-      .references(() => channels.id, { onDelete: "cascade" }),
-    x: integer("x").notNull().default(0),
-    y: integer("y").notNull().default(0),
-    z: integer("z").notNull().default(0),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.sessionId, table.userId, table.channelId] }),
-    index("voice_spatial_channel_idx").on(table.channelId),
-  ]
 );
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1098,8 +1019,7 @@ export const recoveryKeys = pgTable(
     id: text("id").primaryKey(),
     userId: text("user_id")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" })
-      .unique(),
+      .references(() => users.id, { onDelete: "cascade" }),
     keyHash: text("key_hash").notNull(), // Hashed recovery key
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     usedAt: timestamp("used_at", { withTimezone: true }),
@@ -1127,6 +1047,7 @@ export const userNotes = pgTable(
   (table) => [
     primaryKey({ columns: [table.userId, table.targetUserId] }),
     index("user_notes_user_idx").on(table.userId),
+    index("user_notes_target_user_idx").on(table.targetUserId),
   ]
 );
 
@@ -1143,7 +1064,7 @@ export const guildTemplates = pgTable(
     usageCount: integer("usage_count").notNull().default(0),
     creatorId: text("creator_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     serializedGuild: jsonb("serialized_guild").$type<SerializedGuild>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1151,7 +1072,6 @@ export const guildTemplates = pgTable(
   },
   (table) => [
     index("guild_templates_guild_idx").on(table.guildId),
-    uniqueIndex("guild_templates_guild_unique").on(table.guildId),
   ]
 );
 

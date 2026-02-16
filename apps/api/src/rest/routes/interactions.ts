@@ -82,6 +82,13 @@ export async function interactionRoutes(app: FastifyInstance) {
       throw new ApiError(401, "Invalid signature");
     }
 
+    // Validate timestamp freshness (must be within 5 minutes)
+    const timestampMs = Number(timestamp) * 1000;
+    const now = Date.now();
+    if (isNaN(timestampMs) || Math.abs(now - timestampMs) > 5 * 60 * 1000) {
+      throw new ApiError(401, "Invalid request timestamp");
+    }
+
     // Handle PING
     if (body.type === interactionService.InteractionType.PING) {
       return reply.send(interactionService.createPongResponse());

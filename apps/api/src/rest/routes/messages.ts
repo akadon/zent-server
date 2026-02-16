@@ -9,6 +9,8 @@ import * as readStateService from "../../services/readstate.service.js";
 import * as fileService from "../../services/file.service.js";
 import * as messageComponentService from "../../services/message-component.service.js";
 import { ApiError } from "../../services/auth.service.js";
+import * as permissionService from "../../services/permission.service.js";
+import { PermissionFlags } from "@yxc/permissions";
 import { redisPub } from "../../config/redis.js";
 import { db, schema } from "../../db/index.js";
 import { eq, inArray } from "drizzle-orm";
@@ -256,6 +258,8 @@ export async function messageRoutes(app: FastifyInstance) {
     let message;
     if (body.content !== undefined) {
       message = await messageService.updateMessage(messageId, request.userId, body.content);
+    } else {
+      message = await messageService.getMessageWithAuthor(messageId);
     }
 
     // Update components if provided
@@ -310,15 +314,20 @@ export async function messageRoutes(app: FastifyInstance) {
         })
         .parse(request.body);
 
+      const channel = await channelService.getChannel(channelId);
+      if (!channel) throw new ApiError(404, "Channel not found");
+      if (!channel.guildId) throw new ApiError(400, "Bulk delete is only available in guild channels");
+
+      await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.MANAGE_MESSAGES);
+
       await db
         .delete(schema.messages)
         .where(inArray(schema.messages.id, body.messages));
 
-      const channel = await channelService.getChannel(channelId);
       await dispatchMessage(channelId, "MESSAGE_DELETE_BULK", {
         ids: body.messages,
         channelId,
-        guildId: channel?.guildId ?? null,
+        guildId: channel.guildId,
       });
 
       return reply.status(204).send();
