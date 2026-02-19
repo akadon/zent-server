@@ -73,19 +73,29 @@ export async function sessionRoutes(app: FastifyInstance) {
   app.delete("/users/@me/sessions/:sessionId", async (request, reply) => {
     const { sessionId } = request.params as { sessionId: string };
 
-    const result = await db
-      .delete(schema.userSessions)
+    const [existing] = await db
+      .select()
+      .from(schema.userSessions)
       .where(
         and(
           eq(schema.userSessions.id, sessionId),
           eq(schema.userSessions.userId, request.userId)
         )
       )
-      .returning();
+      .limit(1);
 
-    if (result.length === 0) {
+    if (!existing) {
       throw new ApiError(404, "Session not found");
     }
+
+    await db
+      .delete(schema.userSessions)
+      .where(
+        and(
+          eq(schema.userSessions.id, sessionId),
+          eq(schema.userSessions.userId, request.userId)
+        )
+      );
 
     return reply.status(204).send();
   });

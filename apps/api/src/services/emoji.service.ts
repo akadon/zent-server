@@ -11,7 +11,7 @@ export async function createEmoji(
 ) {
   const id = generateSnowflake();
 
-  const [emoji] = await db
+  await db
     .insert(schema.emojis)
     .values({
       id,
@@ -19,8 +19,13 @@ export async function createEmoji(
       name,
       creatorId,
       animated,
-    })
-    .returning();
+    });
+
+  const [emoji] = await db
+    .select()
+    .from(schema.emojis)
+    .where(eq(schema.emojis.id, id))
+    .limit(1);
 
   return emoji!;
 }
@@ -44,11 +49,16 @@ export async function getEmoji(emojiId: string) {
 }
 
 export async function updateEmoji(emojiId: string, name: string) {
-  const [updated] = await db
+  await db
     .update(schema.emojis)
     .set({ name })
+    .where(eq(schema.emojis.id, emojiId));
+
+  const [updated] = await db
+    .select()
+    .from(schema.emojis)
     .where(eq(schema.emojis.id, emojiId))
-    .returning();
+    .limit(1);
 
   if (!updated) throw new ApiError(404, "Emoji not found");
   return updated;
@@ -56,9 +66,14 @@ export async function updateEmoji(emojiId: string, name: string) {
 
 export async function deleteEmoji(emojiId: string) {
   const [deleted] = await db
-    .delete(schema.emojis)
+    .select()
+    .from(schema.emojis)
     .where(eq(schema.emojis.id, emojiId))
-    .returning();
+    .limit(1);
 
   if (!deleted) throw new ApiError(404, "Emoji not found");
+
+  await db
+    .delete(schema.emojis)
+    .where(eq(schema.emojis.id, emojiId));
 }

@@ -107,7 +107,7 @@ export async function createEvent(
 ): Promise<GuildEvent> {
   const id = generateSnowflake();
 
-  const [event] = await db
+  await db
     .insert(schema.guildEvents)
     .values({
       id,
@@ -123,8 +123,13 @@ export async function createEvent(
       entityType: data.entityType,
       entityMetadata: data.entityMetadata ?? null,
       image: data.image ?? null,
-    })
-    .returning();
+    });
+
+  const [event] = await db
+    .select()
+    .from(schema.guildEvents)
+    .where(eq(schema.guildEvents.id, id))
+    .limit(1);
 
   if (!event) {
     throw new ApiError(500, "Failed to create event");
@@ -161,11 +166,16 @@ export async function updateEvent(
     throw new ApiError(403, "Only the event creator can update this event");
   }
 
-  const [event] = await db
+  await db
     .update(schema.guildEvents)
     .set(data)
+    .where(eq(schema.guildEvents.id, eventId));
+
+  const [event] = await db
+    .select()
+    .from(schema.guildEvents)
     .where(eq(schema.guildEvents.id, eventId))
-    .returning();
+    .limit(1);
 
   if (!event) {
     throw new ApiError(500, "Failed to update event");
@@ -264,17 +274,27 @@ export async function removeEventUser(
     throw new ApiError(404, "Event not found");
   }
 
-  const result = await db
-    .delete(schema.guildEventUsers)
+  const [existingUser] = await db
+    .select()
+    .from(schema.guildEventUsers)
     .where(
       and(
         eq(schema.guildEventUsers.eventId, eventId),
         eq(schema.guildEventUsers.userId, userId)
       )
     )
-    .returning();
+    .limit(1);
 
-  if (result.length > 0) {
+  if (existingUser) {
+    await db
+      .delete(schema.guildEventUsers)
+      .where(
+        and(
+          eq(schema.guildEventUsers.eventId, eventId),
+          eq(schema.guildEventUsers.userId, userId)
+        )
+      );
+
     await dispatchGuild(guildId, "GUILD_SCHEDULED_EVENT_USER_REMOVE", {
       guildScheduledEventId: eventId,
       userId,

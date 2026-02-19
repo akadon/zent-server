@@ -61,7 +61,7 @@ const app = Fastify({
 
 // CORS
 await app.register(cors, {
-  origin: true,
+  origin: env.CORS_ORIGIN.split(","),
   credentials: true,
 });
 
@@ -75,6 +75,21 @@ await app.register(multipart, {
     files: 10,
   },
 });
+
+// Allow empty body with application/json content-type (e.g. POST /typing)
+app.removeContentTypeParser("application/json");
+app.addContentTypeParser(
+  "application/json",
+  { parseAs: "string" },
+  (_req, body, done) => {
+    if (!body || (body as string).length === 0) return done(null, undefined);
+    try {
+      done(null, JSON.parse(body as string));
+    } catch (err) {
+      done(err as Error, undefined);
+    }
+  }
+);
 
 // Global rate limiting
 app.addHook("preHandler", globalRateLimit);
@@ -93,6 +108,13 @@ app.setErrorHandler((error, request, reply) => {
       statusCode: 400,
       message: "Validation error",
       errors: error.errors,
+    });
+  }
+
+  if (error.statusCode && error.statusCode < 500) {
+    return reply.status(error.statusCode).send({
+      statusCode: error.statusCode,
+      message: error.message,
     });
   }
 

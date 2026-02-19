@@ -10,8 +10,7 @@ export async function ackMessage(userId: string, channelId: string, messageId: s
       lastMessageId: messageId,
       mentionCount: 0,
     })
-    .onConflictDoUpdate({
-      target: [schema.readStates.userId, schema.readStates.channelId],
+    .onDuplicateKeyUpdate({
       set: {
         lastMessageId: messageId,
         mentionCount: 0,

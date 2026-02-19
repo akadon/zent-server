@@ -54,7 +54,7 @@ export async function createTag(
   const maxPosition = existingTags.reduce((max, t) => Math.max(max, t.position), -1);
 
   const id = generateSnowflake();
-  const [tag] = await db
+  await db
     .insert(schema.forumTags)
     .values({
       id,
@@ -64,8 +64,13 @@ export async function createTag(
       emojiName: data.emojiName ?? null,
       moderated: data.moderated ?? false,
       position: maxPosition + 1,
-    })
-    .returning();
+    });
+
+  const [tag] = await db
+    .select()
+    .from(schema.forumTags)
+    .where(eq(schema.forumTags.id, id))
+    .limit(1);
 
   if (!tag) {
     throw new ApiError(500, "Failed to create tag");
@@ -88,7 +93,7 @@ export async function updateTag(
     throw new ApiError(400, `Tag name must be ${MAX_TAG_NAME_LENGTH} characters or less`);
   }
 
-  const [tag] = await db
+  await db
     .update(schema.forumTags)
     .set({
       ...(data.name !== undefined && { name: data.name }),
@@ -97,8 +102,13 @@ export async function updateTag(
       ...(data.moderated !== undefined && { moderated: data.moderated }),
       ...(data.position !== undefined && { position: data.position }),
     })
+    .where(eq(schema.forumTags.id, tagId));
+
+  const [tag] = await db
+    .select()
+    .from(schema.forumTags)
     .where(eq(schema.forumTags.id, tagId))
-    .returning();
+    .limit(1);
 
   if (!tag) {
     throw new ApiError(404, "Tag not found");
@@ -108,14 +118,19 @@ export async function updateTag(
 }
 
 export async function deleteTag(tagId: string): Promise<void> {
-  const result = await db
-    .delete(schema.forumTags)
+  const [existing] = await db
+    .select()
+    .from(schema.forumTags)
     .where(eq(schema.forumTags.id, tagId))
-    .returning();
+    .limit(1);
 
-  if (result.length === 0) {
+  if (!existing) {
     throw new ApiError(404, "Tag not found");
   }
+
+  await db
+    .delete(schema.forumTags)
+    .where(eq(schema.forumTags.id, tagId));
 }
 
 export async function getPostTags(threadId: string): Promise<ForumTag[]> {

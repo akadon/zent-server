@@ -79,7 +79,7 @@ export async function createGuildSticker(
 
   const id = generateSnowflake();
 
-  const [sticker] = await db
+  await db
     .insert(schema.stickers)
     .values({
       id,
@@ -91,8 +91,13 @@ export async function createGuildSticker(
       formatType: data.formatType,
       available: true,
       userId,
-    })
-    .returning();
+    });
+
+  const [sticker] = await db
+    .select()
+    .from(schema.stickers)
+    .where(eq(schema.stickers.id, id))
+    .limit(1);
 
   if (!sticker) {
     throw new ApiError(500, "Failed to create sticker");
@@ -110,7 +115,7 @@ export async function updateGuildSticker(
     tags?: string;
   }
 ): Promise<Sticker> {
-  const [sticker] = await db
+  await db
     .update(schema.stickers)
     .set(data)
     .where(
@@ -118,8 +123,18 @@ export async function updateGuildSticker(
         eq(schema.stickers.id, stickerId),
         eq(schema.stickers.guildId, guildId)
       )
+    );
+
+  const [sticker] = await db
+    .select()
+    .from(schema.stickers)
+    .where(
+      and(
+        eq(schema.stickers.id, stickerId),
+        eq(schema.stickers.guildId, guildId)
+      )
     )
-    .returning();
+    .limit(1);
 
   if (!sticker) {
     throw new ApiError(404, "Sticker not found");
@@ -129,19 +144,29 @@ export async function updateGuildSticker(
 }
 
 export async function deleteGuildSticker(guildId: string, stickerId: string): Promise<void> {
-  const result = await db
-    .delete(schema.stickers)
+  const [existing] = await db
+    .select()
+    .from(schema.stickers)
     .where(
       and(
         eq(schema.stickers.id, stickerId),
         eq(schema.stickers.guildId, guildId)
       )
     )
-    .returning();
+    .limit(1);
 
-  if (result.length === 0) {
+  if (!existing) {
     throw new ApiError(404, "Sticker not found");
   }
+
+  await db
+    .delete(schema.stickers)
+    .where(
+      and(
+        eq(schema.stickers.id, stickerId),
+        eq(schema.stickers.guildId, guildId)
+      )
+    );
 }
 
 // ── Message Stickers ──

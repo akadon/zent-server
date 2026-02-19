@@ -48,15 +48,20 @@ export async function followChannel(
 
   // Create follower record
   const id = generateSnowflake();
-  const [follower] = await db
+  await db
     .insert(schema.channelFollowers)
     .values({
       id,
       channelId: sourceChannelId,
       webhookId: webhook.id,
       guildId: targetChannel.guildId,
-    })
-    .returning();
+    });
+
+  const [follower] = await db
+    .select()
+    .from(schema.channelFollowers)
+    .where(eq(schema.channelFollowers.id, id))
+    .limit(1);
 
   if (!follower) {
     throw new ApiError(500, "Failed to create channel follower");

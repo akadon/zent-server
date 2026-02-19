@@ -18,6 +18,9 @@ const envSchema = z.object({
     .transform((v) => v === "true")
     .default("false"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  CORS_ORIGIN: z.string().default("http://localhost:3000"),
+  VOICE_SERVICE_URL: z.string().optional(),
+  VOICE_INTERNAL_KEY: z.string().optional(),
 });
 
 export const env = envSchema.parse(process.env);

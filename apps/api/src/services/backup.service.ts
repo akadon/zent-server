@@ -85,15 +85,20 @@ export async function createBackup(guildId: string, userId: string) {
   };
 
   const id = generateSnowflake();
-  const [backup] = await db
+  await db
     .insert(schema.serverBackups)
     .values({
       id,
       guildId,
       createdBy: userId,
       data: backupData,
-    })
-    .returning();
+    });
+
+  const [backup] = await db
+    .select()
+    .from(schema.serverBackups)
+    .where(eq(schema.serverBackups.id, id))
+    .limit(1);
 
   return {
     id: backup!.id,

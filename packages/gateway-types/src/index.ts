@@ -134,9 +134,23 @@ export type GatewayEvent =
   | "INTEGRATION_DELETE"
   // Webhooks
   | "WEBHOOKS_UPDATE"
+  // Relationships
+  | "RELATIONSHIP_ADD"
+  | "RELATIONSHIP_REMOVE"
   // Soundboard
   | "SOUNDBOARD_SOUNDS_UPDATE"
-  | "SOUNDBOARD_SOUND_PLAY";
+  | "SOUNDBOARD_SOUND_PLAY"
+  | "GUILD_SOUNDBOARD_SOUND_CREATE"
+  | "GUILD_SOUNDBOARD_SOUND_UPDATE"
+  | "GUILD_SOUNDBOARD_SOUND_DELETE"
+  | "GUILD_SOUNDBOARD_SOUNDS_UPDATE"
+  // Poll aliases (MESSAGE_ prefix variant used in gateway intent map)
+  | "MESSAGE_POLL_VOTE_ADD"
+  | "MESSAGE_POLL_VOTE_REMOVE"
+  // Audit Log
+  | "GUILD_AUDIT_LOG_ENTRY_CREATE"
+  // Integrations
+  | "GUILD_INTEGRATIONS_UPDATE";
 
 // ── Gateway Payload ──
 export interface GatewayPayload {

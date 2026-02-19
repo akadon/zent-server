@@ -38,6 +38,20 @@ async function ensureBucket() {
   }
 }
 
+const MAGIC_BYTES: Record<string, number[]> = {
+  "image/jpeg": [0xFF, 0xD8, 0xFF],
+  "image/png": [0x89, 0x50, 0x4E, 0x47],
+  "image/gif": [0x47, 0x49, 0x46],
+  "image/webp": [0x52, 0x49, 0x46, 0x46], // RIFF header
+};
+
+function verifyMagicBytes(buffer: Buffer, contentType: string): boolean {
+  const expected = MAGIC_BYTES[contentType];
+  if (!expected) return true; // no magic bytes to check
+  if (buffer.length < expected.length) return false;
+  return expected.every((byte, i) => buffer[i] === byte);
+}
+
 let bucketReady = false;
 
 export async function uploadFile(
@@ -64,6 +78,10 @@ export async function uploadFile(
 
   if (!ALLOWED_TYPES.has(contentType)) {
     throw new ApiError(400, "File type not allowed");
+  }
+
+  if (contentType.startsWith("image/") && !verifyMagicBytes(buffer, contentType)) {
+    throw new ApiError(400, "File content does not match declared type");
   }
 
   const id = generateSnowflake();

@@ -42,7 +42,7 @@ export async function createApplication(
   const id = generateSnowflake();
   const verifyKey = crypto.randomBytes(32).toString("hex");
 
-  const [app] = await db
+  await db
     .insert(schema.applications)
     .values({
       id,
@@ -51,8 +51,13 @@ export async function createApplication(
       ownerId,
       verifyKey,
       flags: 0,
-    })
-    .returning();
+    });
+
+  const [app] = await db
+    .select()
+    .from(schema.applications)
+    .where(eq(schema.applications.id, id))
+    .limit(1);
 
   if (!app) {
     throw new ApiError(500, "Failed to create application");
@@ -90,7 +95,7 @@ export async function updateApplication(
     interactionsEndpointUrl: string | null;
   }>
 ): Promise<Application> {
-  const [app] = await db
+  await db
     .update(schema.applications)
     .set(data)
     .where(
@@ -98,8 +103,18 @@ export async function updateApplication(
         eq(schema.applications.id, appId),
         eq(schema.applications.ownerId, ownerId)
       )
+    );
+
+  const [app] = await db
+    .select()
+    .from(schema.applications)
+    .where(
+      and(
+        eq(schema.applications.id, appId),
+        eq(schema.applications.ownerId, ownerId)
+      )
     )
-    .returning();
+    .limit(1);
 
   if (!app) {
     throw new ApiError(404, "Application not found or you don't own it");
@@ -109,19 +124,29 @@ export async function updateApplication(
 }
 
 export async function deleteApplication(appId: string, ownerId: string): Promise<void> {
-  const result = await db
-    .delete(schema.applications)
+  const [existing] = await db
+    .select()
+    .from(schema.applications)
     .where(
       and(
         eq(schema.applications.id, appId),
         eq(schema.applications.ownerId, ownerId)
       )
     )
-    .returning();
+    .limit(1);
 
-  if (result.length === 0) {
+  if (!existing) {
     throw new ApiError(404, "Application not found or you don't own it");
   }
+
+  await db
+    .delete(schema.applications)
+    .where(
+      and(
+        eq(schema.applications.id, appId),
+        eq(schema.applications.ownerId, ownerId)
+      )
+    );
 }
 
 // ── Application Commands (Slash Commands) ──
@@ -147,7 +172,7 @@ export async function createCommand(
   const id = generateSnowflake();
   const version = generateSnowflake();
 
-  const [command] = await db
+  await db
     .insert(schema.applicationCommands)
     .values({
       id,
@@ -161,8 +186,13 @@ export async function createCommand(
       dmPermission: data.dmPermission ?? true,
       nsfw: data.nsfw ?? false,
       version,
-    })
-    .returning();
+    });
+
+  const [command] = await db
+    .select()
+    .from(schema.applicationCommands)
+    .where(eq(schema.applicationCommands.id, id))
+    .limit(1);
 
   if (!command) {
     throw new ApiError(500, "Failed to create command");
@@ -234,7 +264,7 @@ export async function updateCommand(
 
   const version = generateSnowflake();
 
-  const [command] = await db
+  await db
     .update(schema.applicationCommands)
     .set({ ...data, version })
     .where(
@@ -242,8 +272,18 @@ export async function updateCommand(
         eq(schema.applicationCommands.applicationId, applicationId),
         eq(schema.applicationCommands.id, commandId)
       )
+    );
+
+  const [command] = await db
+    .select()
+    .from(schema.applicationCommands)
+    .where(
+      and(
+        eq(schema.applicationCommands.applicationId, applicationId),
+        eq(schema.applicationCommands.id, commandId)
+      )
     )
-    .returning();
+    .limit(1);
 
   if (!command) {
     throw new ApiError(404, "Command not found");
@@ -256,19 +296,29 @@ export async function deleteCommand(
   applicationId: string,
   commandId: string
 ): Promise<void> {
-  const result = await db
-    .delete(schema.applicationCommands)
+  const [existing] = await db
+    .select()
+    .from(schema.applicationCommands)
     .where(
       and(
         eq(schema.applicationCommands.applicationId, applicationId),
         eq(schema.applicationCommands.id, commandId)
       )
     )
-    .returning();
+    .limit(1);
 
-  if (result.length === 0) {
+  if (!existing) {
     throw new ApiError(404, "Command not found");
   }
+
+  await db
+    .delete(schema.applicationCommands)
+    .where(
+      and(
+        eq(schema.applicationCommands.applicationId, applicationId),
+        eq(schema.applicationCommands.id, commandId)
+      )
+    );
 }
 
 export async function bulkOverwriteGlobalCommands(

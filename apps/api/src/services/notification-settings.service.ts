@@ -37,24 +37,29 @@ export async function upsertSettings(
     muteUntil: data.muteUntil ? new Date(data.muteUntil) : null,
   };
 
-  const [result] = await db
+  const setClause = {
+    ...(data.level !== undefined ? { level: data.level as any } : {}),
+    ...(data.suppressEveryone !== undefined ? { suppressEveryone: data.suppressEveryone } : {}),
+    ...(data.suppressRoles !== undefined ? { suppressRoles: data.suppressRoles } : {}),
+    ...(data.muted !== undefined ? { muted: data.muted } : {}),
+    ...(data.muteUntil !== undefined ? { muteUntil: data.muteUntil ? new Date(data.muteUntil) : null } : {}),
+  };
+
+  await db
     .insert(schema.notificationSettings)
     .values(values)
-    .onConflictDoUpdate({
-      target: [
-        schema.notificationSettings.userId,
-        schema.notificationSettings.guildId,
-        schema.notificationSettings.channelId,
-      ],
-      set: {
-        ...(data.level !== undefined ? { level: data.level as any } : {}),
-        ...(data.suppressEveryone !== undefined ? { suppressEveryone: data.suppressEveryone } : {}),
-        ...(data.suppressRoles !== undefined ? { suppressRoles: data.suppressRoles } : {}),
-        ...(data.muted !== undefined ? { muted: data.muted } : {}),
-        ...(data.muteUntil !== undefined ? { muteUntil: data.muteUntil ? new Date(data.muteUntil) : null } : {}),
-      },
-    })
-    .returning();
+    .onDuplicateKeyUpdate({ set: setClause });
+
+  const [result] = await db
+    .select()
+    .from(schema.notificationSettings)
+    .where(
+      and(
+        eq(schema.notificationSettings.userId, userId),
+        eq(schema.notificationSettings.guildId, guildId ?? "global"),
+        eq(schema.notificationSettings.channelId, channelId ?? "global"),
+      )
+    );
 
   return {
     ...result!,

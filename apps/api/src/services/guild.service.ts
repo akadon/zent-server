@@ -4,6 +4,21 @@ import { generateSnowflake } from "@yxc/snowflake";
 import { DEFAULT_PERMISSIONS } from "@yxc/permissions";
 import { ApiError } from "./auth.service.js";
 import { ChannelType } from "@yxc/types";
+import { invalidateGuildPermissions } from "./permission.service.js";
+import { env } from "../config/env.js";
+
+async function fetchVoiceStates(guildId: string): Promise<any[]> {
+  if (!env.VOICE_SERVICE_URL) return [];
+  try {
+    const headers: Record<string, string> = {};
+    if (env.VOICE_INTERNAL_KEY) headers["x-internal-key"] = env.VOICE_INTERNAL_KEY;
+    const res = await fetch(`${env.VOICE_SERVICE_URL}/api/voice/${guildId}/states`, { headers });
+    if (!res.ok) return [];
+    return (await res.json()) as any[];
+  } catch {
+    return [];
+  }
+}
 
 export async function createGuild(ownerId: string, name: string, icon?: string) {
   const guildId = generateSnowflake();
@@ -67,20 +82,12 @@ export async function getGuild(guildId: string) {
 
   if (!guild) return null;
 
-  const guildChannels = await db
-    .select()
-    .from(schema.channels)
-    .where(eq(schema.channels.guildId, guildId));
-
-  const guildRoles = await db
-    .select()
-    .from(schema.roles)
-    .where(eq(schema.roles.guildId, guildId));
-
-  const guildMembers = await db
-    .select()
-    .from(schema.members)
-    .where(eq(schema.members.guildId, guildId));
+  const [guildChannels, guildRoles, guildMembers, voiceStates] = await Promise.all([
+    db.select().from(schema.channels).where(eq(schema.channels.guildId, guildId)),
+    db.select().from(schema.roles).where(eq(schema.roles.guildId, guildId)),
+    db.select().from(schema.members).where(eq(schema.members.guildId, guildId)),
+    fetchVoiceStates(guildId),
+  ]);
 
   return {
     ...guild,
@@ -101,7 +108,7 @@ export async function getGuild(guildId: string) {
       communicationDisabledUntil: m.communicationDisabledUntil?.toISOString() ?? null,
     })),
     memberCount: guildMembers.length,
-    voiceStates: [],
+    voiceStates,
   };
 }
 
@@ -127,16 +134,17 @@ export async function updateGuild(
     .limit(1);
 
   if (!guild) throw new ApiError(404, "Guild not found");
-  // Permission check: owner or MANAGE_GUILD (simplified for now)
-  if (guild.ownerId !== userId) {
-    throw new ApiError(403, "Missing permissions");
-  }
 
-  const [updated] = await db
+  await db
     .update(schema.guilds)
     .set({ ...data, updatedAt: new Date() })
+    .where(eq(schema.guilds.id, guildId));
+
+  const [updated] = await db
+    .select()
+    .from(schema.guilds)
     .where(eq(schema.guilds.id, guildId))
-    .returning();
+    .limit(1);
 
   return {
     ...updated!,
@@ -216,6 +224,16 @@ export async function getUserGuilds(userId: string) {
     membersByGuild.set(m.guildId, arr);
   }
 
+  // Fetch voice states for all guilds in parallel
+  const voiceResults = await Promise.allSettled(
+    guilds.map((guild) => fetchVoiceStates(guild.id))
+  );
+  const voiceByGuild = new Map<string, any[]>();
+  guilds.forEach((guild, i) => {
+    const result = voiceResults[i]!;
+    voiceByGuild.set(guild.id, result.status === "fulfilled" ? result.value : []);
+  });
+
   return guilds.map((guild) => {
     const guildChannels = channelsByGuild.get(guild.id) ?? [];
     const guildRoles = rolesByGuild.get(guild.id) ?? [];
@@ -240,9 +258,39 @@ export async function getUserGuilds(userId: string) {
         communicationDisabledUntil: m.communicationDisabledUntil?.toISOString() ?? null,
       })),
       memberCount: guildMembers.length,
-      voiceStates: [],
+      voiceStates: voiceByGuild.get(guild.id) ?? [],
     };
   });
+}
+
+export async function transferOwnership(guildId: string, currentOwnerId: string, newOwnerId: string) {
+  const [guild] = await db
+    .select({ ownerId: schema.guilds.ownerId })
+    .from(schema.guilds)
+    .where(eq(schema.guilds.id, guildId))
+    .limit(1);
+
+  if (!guild) throw new ApiError(404, "Guild not found");
+  if (guild.ownerId !== currentOwnerId) throw new ApiError(403, "Only the owner can transfer ownership");
+
+  await db
+    .update(schema.guilds)
+    .set({ ownerId: newOwnerId, updatedAt: new Date() })
+    .where(eq(schema.guilds.id, guildId));
+
+  await invalidateGuildPermissions(guildId);
+
+  const [updated] = await db
+    .select()
+    .from(schema.guilds)
+    .where(eq(schema.guilds.id, guildId))
+    .limit(1);
+
+  return {
+    ...updated!,
+    createdAt: updated!.createdAt.toISOString(),
+    updatedAt: updated!.updatedAt.toISOString(),
+  };
 }
 
 export async function isMember(userId: string, guildId: string): Promise<boolean> {

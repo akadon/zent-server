@@ -29,10 +29,15 @@ export async function createBanAppeal(guildId: string, userId: string, reason: s
   if (existing) throw new ApiError(400, "You already have a pending appeal");
 
   const id = generateSnowflake();
-  const [appeal] = await db
+  await db
     .insert(schema.banAppeals)
-    .values({ id, guildId, userId, reason })
-    .returning();
+    .values({ id, guildId, userId, reason });
+
+  const [appeal] = await db
+    .select()
+    .from(schema.banAppeals)
+    .where(eq(schema.banAppeals.id, id))
+    .limit(1);
 
   return {
     ...appeal!,
@@ -81,7 +86,7 @@ export async function resolveAppeal(
     throw new ApiError(403, "Missing permissions");
   }
 
-  const [updated] = await db
+  await db
     .update(schema.banAppeals)
     .set({
       status,
@@ -89,8 +94,13 @@ export async function resolveAppeal(
       moderatorReason: moderatorReason ?? null,
       resolvedAt: new Date(),
     })
+    .where(eq(schema.banAppeals.id, appealId));
+
+  const [updated] = await db
+    .select()
+    .from(schema.banAppeals)
     .where(eq(schema.banAppeals.id, appealId))
-    .returning();
+    .limit(1);
 
   // If accepted, remove the ban
   if (status === "accepted") {

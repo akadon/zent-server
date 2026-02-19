@@ -362,8 +362,10 @@ export interface RegisterRequest {
 }
 
 export interface AuthResponse {
-  token: string;
-  user: User;
+  token: string | null;
+  user: User | null;
+  mfa?: boolean;
+  ticket?: string;
 }
 
 // ── Poll Types ──

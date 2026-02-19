@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
@@ -137,7 +137,7 @@ export async function addThreadMember(threadId: string, userId: string) {
   await db
     .insert(schema.threadMembers)
     .values({ channelId: threadId, userId })
-    .onConflictDoNothing();
+    .onDuplicateKeyUpdate({ set: { channelId: sql`channel_id` } });
 }
 
 export async function removeThreadMember(threadId: string, userId: string) {

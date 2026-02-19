@@ -14,7 +14,7 @@ export async function createScheduledMessage(
   }
 
   const id = generateSnowflake();
-  const [msg] = await db
+  await db
     .insert(schema.scheduledMessages)
     .values({
       id,
@@ -22,8 +22,13 @@ export async function createScheduledMessage(
       authorId,
       content,
       scheduledFor,
-    })
-    .returning();
+    });
+
+  const [msg] = await db
+    .select()
+    .from(schema.scheduledMessages)
+    .where(eq(schema.scheduledMessages.id, id))
+    .limit(1);
 
   return {
     ...msg!,

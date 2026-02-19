@@ -21,7 +21,7 @@
     "@fastify/cookie": "^11.0.0",
     "@fastify/websocket": "^11.0.0",
     "drizzle-orm": "^0.38.0",
-    "postgres": "^3.4.0",
+    "mysql2": "^3.11.0",
     "ioredis": "^5.4.0",
     "bcrypt": "^5.1.0",
     "jsonwebtoken": "^9.0.0",

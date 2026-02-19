@@ -19,7 +19,7 @@ export async function createWebhook(
   const id = generateSnowflake();
   const token = generateWebhookToken();
 
-  const [webhook] = await db
+  await db
     .insert(schema.webhooks)
     .values({
       id,
@@ -30,8 +30,13 @@ export async function createWebhook(
       avatar: avatar ?? null,
       token,
       type: 1,
-    })
-    .returning();
+    });
+
+  const [webhook] = await db
+    .select()
+    .from(schema.webhooks)
+    .where(eq(schema.webhooks.id, id))
+    .limit(1);
 
   return webhook!;
 }
@@ -65,23 +70,33 @@ export async function updateWebhook(
   webhookId: string,
   data: { name?: string; avatar?: string | null; channelId?: string }
 ) {
-  const [updated] = await db
+  await db
     .update(schema.webhooks)
     .set(data)
+    .where(eq(schema.webhooks.id, webhookId));
+
+  const [updated] = await db
+    .select()
+    .from(schema.webhooks)
     .where(eq(schema.webhooks.id, webhookId))
-    .returning();
+    .limit(1);
 
   if (!updated) throw new ApiError(404, "Webhook not found");
   return updated;
 }
 
 export async function deleteWebhook(webhookId: string) {
-  const [deleted] = await db
-    .delete(schema.webhooks)
+  const [existing] = await db
+    .select()
+    .from(schema.webhooks)
     .where(eq(schema.webhooks.id, webhookId))
-    .returning();
+    .limit(1);
 
-  if (!deleted) throw new ApiError(404, "Webhook not found");
+  if (!existing) throw new ApiError(404, "Webhook not found");
+
+  await db
+    .delete(schema.webhooks)
+    .where(eq(schema.webhooks.id, webhookId));
 }
 
 export async function executeWebhook(
@@ -100,7 +115,7 @@ export async function executeWebhook(
 
   const id = generateSnowflake();
 
-  const [message] = await db
+  await db
     .insert(schema.messages)
     .values({
       id,
@@ -110,8 +125,13 @@ export async function executeWebhook(
       type: 0,
       tts: options?.tts ?? false,
       webhookId: webhook.id,
-    })
-    .returning();
+    });
+
+  const [message] = await db
+    .select()
+    .from(schema.messages)
+    .where(eq(schema.messages.id, id))
+    .limit(1);
 
   // Update channel last message
   await db

@@ -43,6 +43,7 @@ export async function guildRoutes(app: FastifyInstance) {
       .parse(request.body);
 
     const guild = await guildService.createGuild(request.userId, body.name, body.icon);
+    await dispatchGuild(guild!.id, "GUILD_CREATE", guild);
     return reply.status(201).send(guild);
   });
 
@@ -82,8 +83,8 @@ export async function guildRoutes(app: FastifyInstance) {
 
   app.delete("/guilds/:guildId", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
-    await dispatchGuild(guildId, "GUILD_DELETE", { id: guildId });
     await guildService.deleteGuild(guildId, request.userId);
+    await dispatchGuild(guildId, "GUILD_DELETE", { id: guildId });
     return reply.status(204).send();
   });
 
@@ -471,6 +472,7 @@ export async function guildRoutes(app: FastifyInstance) {
       body.name,
       body.avatar
     );
+    await dispatchGuild(channel.guildId, "WEBHOOKS_UPDATE", { guildId: channel.guildId, channelId });
     await auditlogService.createAuditLogEntry(channel.guildId, request.userId, AuditLogActionType.WEBHOOK_CREATE, webhook.id);
     return reply.status(201).send(webhook);
   });
@@ -495,6 +497,8 @@ export async function guildRoutes(app: FastifyInstance) {
     await permissionService.requireGuildPermission(request.userId, existingWebhook.guildId, PermissionFlags.MANAGE_WEBHOOKS);
 
     const webhook = await webhookService.updateWebhook(webhookId, body);
+    await dispatchGuild(existingWebhook.guildId, "WEBHOOKS_UPDATE", { guildId: existingWebhook.guildId, channelId: webhook.channelId });
+    await auditlogService.createAuditLogEntry(existingWebhook.guildId, request.userId, AuditLogActionType.WEBHOOK_UPDATE, webhookId);
     return reply.send(webhook);
   });
 
@@ -503,6 +507,7 @@ export async function guildRoutes(app: FastifyInstance) {
     const webhook = await webhookService.getWebhook(webhookId);
     await permissionService.requireGuildPermission(request.userId, webhook.guildId, PermissionFlags.MANAGE_WEBHOOKS);
     await webhookService.deleteWebhook(webhookId);
+    await dispatchGuild(webhook.guildId, "WEBHOOKS_UPDATE", { guildId: webhook.guildId, channelId: webhook.channelId });
     await auditlogService.createAuditLogEntry(webhook.guildId, request.userId, AuditLogActionType.WEBHOOK_DELETE, webhookId);
     return reply.status(204).send();
   });

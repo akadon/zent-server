@@ -15,7 +15,7 @@ export async function createNotification(
   }
 ) {
   const id = generateSnowflake();
-  const [notif] = await db
+  await db
     .insert(schema.notificationLog)
     .values({
       id,
@@ -27,8 +27,13 @@ export async function createNotification(
       sourceChannelId: opts?.sourceChannelId ?? null,
       sourceMessageId: opts?.sourceMessageId ?? null,
       sourceUserId: opts?.sourceUserId ?? null,
-    })
-    .returning();
+    });
+
+  const [notif] = await db
+    .select()
+    .from(schema.notificationLog)
+    .where(eq(schema.notificationLog.id, id))
+    .limit(1);
 
   return {
     ...notif!,
