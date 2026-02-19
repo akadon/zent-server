@@ -11,10 +11,16 @@ export async function createTemplate(
   createdBy: string
 ) {
   const id = generateSnowflake();
-  const [template] = await db
+  await db
     .insert(schema.threadTemplates)
-    .values({ id, channelId, guildId, name, content, createdBy })
-    .returning();
+    .values({ id, channelId, guildId, name, content, createdBy });
+
+  const [template] = await db
+    .select()
+    .from(schema.threadTemplates)
+    .where(eq(schema.threadTemplates.id, id))
+    .limit(1);
+
   return {
     ...template!,
     createdAt: template!.createdAt.toISOString(),

@@ -21,10 +21,15 @@ export async function addMember(guildId: string, userId: string) {
 
   if (ban) throw new ApiError(403, "User is banned from this guild");
 
-  const [member] = await db
+  await db
     .insert(schema.members)
-    .values({ userId, guildId })
-    .returning();
+    .values({ userId, guildId });
+
+  const [member] = await db
+    .select()
+    .from(schema.members)
+    .where(and(eq(schema.members.userId, userId), eq(schema.members.guildId, guildId)))
+    .limit(1);
 
   return member!;
 }
@@ -45,11 +50,17 @@ export async function removeMember(guildId: string, userId: string) {
     .where(and(eq(schema.memberRoles.userId, userId), eq(schema.memberRoles.guildId, guildId)));
 
   const [removed] = await db
-    .delete(schema.members)
+    .select()
+    .from(schema.members)
     .where(and(eq(schema.members.userId, userId), eq(schema.members.guildId, guildId)))
-    .returning();
+    .limit(1);
 
   if (!removed) throw new ApiError(404, "Member not found");
+
+  await db
+    .delete(schema.members)
+    .where(and(eq(schema.members.userId, userId), eq(schema.members.guildId, guildId)));
+
   return removed;
 }
 
@@ -147,11 +158,16 @@ export async function banMember(
 
 export async function unbanMember(guildId: string, targetId: string) {
   const [ban] = await db
-    .delete(schema.bans)
+    .select()
+    .from(schema.bans)
     .where(and(eq(schema.bans.guildId, guildId), eq(schema.bans.userId, targetId)))
-    .returning();
+    .limit(1);
 
   if (!ban) throw new ApiError(404, "Ban not found");
+
+  await db
+    .delete(schema.bans)
+    .where(and(eq(schema.bans.guildId, guildId), eq(schema.bans.userId, targetId)));
 }
 
 export async function getMember(guildId: string, userId: string) {

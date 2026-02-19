@@ -73,7 +73,7 @@ export async function createCredential(
 
   const id = generateSnowflake();
 
-  const [credential] = await db
+  await db
     .insert(schema.passkeyCredentials)
     .values({
       id,
@@ -84,8 +84,13 @@ export async function createCredential(
       deviceType: data.deviceType ?? null,
       transports: data.transports ?? null,
       aaguid: data.aaguid ?? null,
-    })
-    .returning();
+    });
+
+  const [credential] = await db
+    .select()
+    .from(schema.passkeyCredentials)
+    .where(eq(schema.passkeyCredentials.id, id))
+    .limit(1);
 
   if (!credential) {
     throw new ApiError(500, "Failed to create credential");
@@ -118,19 +123,29 @@ export async function deleteCredential(
   userId: string,
   credentialId: string
 ): Promise<void> {
-  const result = await db
-    .delete(schema.passkeyCredentials)
+  const [existing] = await db
+    .select()
+    .from(schema.passkeyCredentials)
     .where(
       and(
         eq(schema.passkeyCredentials.userId, userId),
         eq(schema.passkeyCredentials.credentialId, credentialId)
       )
     )
-    .returning();
+    .limit(1);
 
-  if (result.length === 0) {
+  if (!existing) {
     throw new ApiError(404, "Passkey not found");
   }
+
+  await db
+    .delete(schema.passkeyCredentials)
+    .where(
+      and(
+        eq(schema.passkeyCredentials.userId, userId),
+        eq(schema.passkeyCredentials.credentialId, credentialId)
+      )
+    );
 }
 
 export async function authenticateWithCredential(

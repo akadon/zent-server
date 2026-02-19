@@ -7,7 +7,7 @@ import type { CreateChannelRequest, UpdateChannelRequest } from "@yxc/types";
 export async function createChannel(guildId: string, data: CreateChannelRequest) {
   const id = generateSnowflake();
 
-  const [channel] = await db
+  await db
     .insert(schema.channels)
     .values({
       id,
@@ -21,8 +21,13 @@ export async function createChannel(guildId: string, data: CreateChannelRequest)
       bitrate: data.bitrate ?? null,
       userLimit: data.userLimit ?? null,
       position: data.position ?? 0,
-    })
-    .returning();
+    });
+
+  const [channel] = await db
+    .select()
+    .from(schema.channels)
+    .where(eq(schema.channels.id, id))
+    .limit(1);
 
   return {
     ...channel!,
@@ -54,11 +59,16 @@ export async function getGuildChannels(guildId: string) {
 }
 
 export async function updateChannel(channelId: string, data: UpdateChannelRequest) {
-  const [updated] = await db
+  await db
     .update(schema.channels)
     .set(data)
+    .where(eq(schema.channels.id, channelId));
+
+  const [updated] = await db
+    .select()
+    .from(schema.channels)
     .where(eq(schema.channels.id, channelId))
-    .returning();
+    .limit(1);
 
   if (!updated) throw new ApiError(404, "Channel not found");
   return { ...updated, createdAt: updated.createdAt.toISOString() };
@@ -66,10 +76,16 @@ export async function updateChannel(channelId: string, data: UpdateChannelReques
 
 export async function deleteChannel(channelId: string) {
   const [deleted] = await db
-    .delete(schema.channels)
+    .select()
+    .from(schema.channels)
     .where(eq(schema.channels.id, channelId))
-    .returning();
+    .limit(1);
 
   if (!deleted) throw new ApiError(404, "Channel not found");
+
+  await db
+    .delete(schema.channels)
+    .where(eq(schema.channels.id, channelId));
+
   return { ...deleted, createdAt: deleted.createdAt.toISOString() };
 }

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { register, login, getUserById, ApiError } from "../../services/auth.service.js";
+import { register, login, getUserById, invalidateUserCache, ApiError } from "../../services/auth.service.js";
 import { authMiddleware } from "../../middleware/auth.js";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 
@@ -11,7 +11,10 @@ const registerSchema = z.object({
     .min(2)
     .max(32)
     .regex(/^[a-zA-Z0-9_]+$/, "Username can only contain letters, numbers, and underscores"),
-  password: z.string().min(8).max(128),
+  password: z.string().min(8).max(128).regex(
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/,
+    "Password must contain uppercase, lowercase, and a number"
+  ),
 });
 
 const loginSchema = z.object({
@@ -73,14 +76,18 @@ export async function authRoutes(app: FastifyInstance) {
         }
       }
 
-      const [updated] = await db
+      await db
         .update(schema.users)
         .set({
           ...body,
           updatedAt: new Date(),
         })
-        .where(eq(schema.users.id, request.userId))
-        .returning({
+        .where(eq(schema.users.id, request.userId));
+
+      await invalidateUserCache(request.userId);
+
+      const [updated] = await db
+        .select({
           id: schema.users.id,
           username: schema.users.username,
           displayName: schema.users.displayName,
@@ -96,7 +103,9 @@ export async function authRoutes(app: FastifyInstance) {
           premiumType: schema.users.premiumType,
           locale: schema.users.locale,
           createdAt: schema.users.createdAt,
-        });
+        })
+        .from(schema.users)
+        .where(eq(schema.users.id, request.userId));
 
       return reply.send({
         ...updated!,

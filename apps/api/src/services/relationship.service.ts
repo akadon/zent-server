@@ -1,4 +1,4 @@
-import { eq, and, or } from "drizzle-orm";
+import { eq, and, or, inArray, ilike } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
@@ -81,16 +81,14 @@ export async function sendFriendRequest(userId: string, targetId: string) {
     await tx
       .insert(schema.relationships)
       .values({ userId, targetId, type: 4 })
-      .onConflictDoUpdate({
-        target: [schema.relationships.userId, schema.relationships.targetId],
+      .onDuplicateKeyUpdate({
         set: { type: 4 },
       });
 
     await tx
       .insert(schema.relationships)
       .values({ userId: targetId, targetId: userId, type: 3 })
-      .onConflictDoUpdate({
-        target: [schema.relationships.userId, schema.relationships.targetId],
+      .onDuplicateKeyUpdate({
         set: { type: 3 },
       });
   });
@@ -174,8 +172,7 @@ export async function blockUser(userId: string, targetId: string) {
     await tx
       .insert(schema.relationships)
       .values({ userId, targetId, type: 2 })
-      .onConflictDoUpdate({
-        target: [schema.relationships.userId, schema.relationships.targetId],
+      .onDuplicateKeyUpdate({
         set: { type: 2 },
       });
   });
@@ -212,30 +209,29 @@ export async function getRelationships(userId: string) {
     .from(schema.relationships)
     .where(eq(schema.relationships.userId, userId));
 
-  const result = [];
-  for (const rel of rels) {
-    const [user] = await db
-      .select({
-        id: schema.users.id,
-        username: schema.users.username,
-        displayName: schema.users.displayName,
-        avatar: schema.users.avatar,
-        status: schema.users.status,
-      })
-      .from(schema.users)
-      .where(eq(schema.users.id, rel.targetId))
-      .limit(1);
+  if (rels.length === 0) return [];
 
-    if (user) {
-      result.push({
-        id: rel.targetId,
-        type: rel.type,
-        user,
-      });
-    }
-  }
+  const targetIds = rels.map((r) => r.targetId);
+  const users = await db
+    .select({
+      id: schema.users.id,
+      username: schema.users.username,
+      displayName: schema.users.displayName,
+      avatar: schema.users.avatar,
+      status: schema.users.status,
+    })
+    .from(schema.users)
+    .where(inArray(schema.users.id, targetIds));
 
-  return result;
+  const userMap = new Map(users.map((u) => [u.id, u]));
+
+  return rels
+    .filter((rel) => userMap.has(rel.targetId))
+    .map((rel) => ({
+      id: rel.targetId,
+      type: rel.type,
+      user: userMap.get(rel.targetId)!,
+    }));
 }
 
 // ── DM Channels ──
@@ -302,26 +298,38 @@ export async function getUserDMChannels(userId: string) {
     .from(schema.dmChannels)
     .where(eq(schema.dmChannels.userId, userId));
 
-  const channels = [];
-  for (const entry of dmEntries) {
-    const [channel] = await db
-      .select()
-      .from(schema.channels)
-      .where(eq(schema.channels.id, entry.channelId))
-      .limit(1);
+  if (dmEntries.length === 0) return [];
 
-    if (!channel) continue;
+  const channelIds = dmEntries.map((e) => e.channelId);
 
-    // Get recipients
-    const recipients = await db
-      .select({ userId: schema.dmChannels.userId })
-      .from(schema.dmChannels)
-      .where(eq(schema.dmChannels.channelId, entry.channelId));
+  // Batch fetch all channels
+  const channelList = await db
+    .select()
+    .from(schema.channels)
+    .where(inArray(schema.channels.id, channelIds));
 
-    const users = [];
-    for (const r of recipients) {
-      if (r.userId === userId) continue;
-      const [user] = await db
+  const channelMap = new Map(channelList.map((c) => [c.id, c]));
+
+  // Batch fetch all dm_channel rows for these channels (to find recipients)
+  const allDmRows = await db
+    .select({ channelId: schema.dmChannels.channelId, userId: schema.dmChannels.userId })
+    .from(schema.dmChannels)
+    .where(inArray(schema.dmChannels.channelId, channelIds));
+
+  // Collect all recipient user IDs (excluding self)
+  const recipientUserIds = new Set<string>();
+  const recipientsByChannel = new Map<string, string[]>();
+  for (const row of allDmRows) {
+    if (row.userId === userId) continue;
+    recipientUserIds.add(row.userId);
+    const list = recipientsByChannel.get(row.channelId) ?? [];
+    list.push(row.userId);
+    recipientsByChannel.set(row.channelId, list);
+  }
+
+  // Batch fetch all recipient users
+  const userList = recipientUserIds.size > 0
+    ? await db
         .select({
           id: schema.users.id,
           username: schema.users.username,
@@ -330,17 +338,24 @@ export async function getUserDMChannels(userId: string) {
           status: schema.users.status,
         })
         .from(schema.users)
-        .where(eq(schema.users.id, r.userId))
-        .limit(1);
-      if (user) users.push(user);
-    }
+        .where(inArray(schema.users.id, [...recipientUserIds]))
+    : [];
 
-    channels.push({
-      ...channel,
-      createdAt: channel.createdAt.toISOString(),
-      recipients: users,
-    });
-  }
+  const userMap = new Map(userList.map((u) => [u.id, u]));
 
-  return channels;
+  return channelIds
+    .map((channelId) => {
+      const channel = channelMap.get(channelId);
+      if (!channel) return null;
+      const recipientIds = recipientsByChannel.get(channelId) ?? [];
+      const recipients = recipientIds
+        .map((id) => userMap.get(id))
+        .filter((u): u is NonNullable<typeof u> => u != null);
+      return {
+        ...channel,
+        createdAt: channel.createdAt.toISOString(),
+        recipients,
+      };
+    })
+    .filter((c): c is NonNullable<typeof c> => c != null);
 }

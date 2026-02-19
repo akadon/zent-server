@@ -4,10 +4,10 @@ import { channels, messages, guilds, members } from "../../db/schema.js";
 import { eq, and, desc, count } from "drizzle-orm";
 import { ApiError } from "../../services/auth.service.js";
 
-// In-memory set of public channel IDs. In production this would be persisted.
+// In-memory set of public channel IDs. Resets on server restart — not persisted to DB.
 const publicChannelIds = new Set<string>();
 
-// In-memory set of discoverable guild IDs.
+// In-memory set of discoverable guild IDs. Resets on server restart — not persisted to DB.
 const discoverableGuildIds = new Set<string>();
 
 /** Register a channel as publicly viewable */

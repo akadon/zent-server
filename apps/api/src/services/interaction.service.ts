@@ -55,7 +55,7 @@ export async function createInteraction(
   const id = generateSnowflake();
   const token = crypto.randomBytes(32).toString("hex");
 
-  const [interaction] = await db
+  await db
     .insert(schema.interactions)
     .values({
       id,
@@ -67,8 +67,13 @@ export async function createInteraction(
       token,
       data: data.data ?? null,
       version: 1,
-    })
-    .returning();
+    });
+
+  const [interaction] = await db
+    .select()
+    .from(schema.interactions)
+    .where(eq(schema.interactions.id, id))
+    .limit(1);
 
   if (!interaction) {
     throw new ApiError(500, "Failed to create interaction");

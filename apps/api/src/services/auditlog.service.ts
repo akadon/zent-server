@@ -1,6 +1,7 @@
 import { eq, and, desc } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
+import { redisPub } from "../config/redis.js";
 
 export async function createAuditLogEntry(
   guildId: string,
@@ -12,7 +13,7 @@ export async function createAuditLogEntry(
 ) {
   const id = generateSnowflake();
 
-  const [entry] = await db
+  await db
     .insert(schema.auditLogEntries)
     .values({
       id,
@@ -22,8 +23,22 @@ export async function createAuditLogEntry(
       targetId: targetId ?? null,
       reason: reason ?? null,
       changes: changes ? JSON.parse(JSON.stringify(changes)) : null,
+    });
+
+  const [entry] = await db
+    .select()
+    .from(schema.auditLogEntries)
+    .where(eq(schema.auditLogEntries.id, id))
+    .limit(1);
+
+  // Dispatch GUILD_AUDIT_LOG_ENTRY_CREATE to guild members
+  redisPub.publish(
+    `gateway:guild:${guildId}`,
+    JSON.stringify({
+      event: "GUILD_AUDIT_LOG_ENTRY_CREATE",
+      data: { ...entry!, createdAt: entry!.createdAt.toISOString() },
     })
-    .returning();
+  ).catch(() => {});
 
   return entry!;
 }

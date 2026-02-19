@@ -214,7 +214,7 @@ export async function featureRoutes(app: FastifyInstance) {
       query.guildId,
       query.channelId
     );
-    return reply.send(settings);
+    return reply.send(settings[0] ?? null);
   });
 
   app.put("/users/@me/notification-settings", async (request, reply) => {

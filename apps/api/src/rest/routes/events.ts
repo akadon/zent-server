@@ -3,7 +3,7 @@ import { z } from "zod";
 import { authMiddleware } from "../../middleware/auth.js";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { db, schema } from "../../db/index.js";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { ApiError } from "../../services/auth.service.js";
 import * as eventService from "../../services/event.service.js";
 
@@ -276,6 +276,21 @@ export async function eventRoutes(app: FastifyInstance) {
       after: after ? new Date(after) : undefined,
     });
 
+    // Batch fetch interested users for all events
+    const eventIds = events.map((e) => e.id);
+    let interestedByEvent = new Map<string, string[]>();
+    if (eventIds.length > 0) {
+      const allInterested = await db
+        .select({ eventId: schema.guildEventUsers.eventId, userId: schema.guildEventUsers.userId })
+        .from(schema.guildEventUsers)
+        .where(inArray(schema.guildEventUsers.eventId, eventIds));
+      for (const row of allInterested) {
+        const list = interestedByEvent.get(row.eventId) ?? [];
+        list.push(row.userId);
+        interestedByEvent.set(row.eventId, list);
+      }
+    }
+
     // Return in legacy format
     return reply.send(
       events.map((e) => ({
@@ -288,7 +303,7 @@ export async function eventRoutes(app: FastifyInstance) {
         endTime: e.scheduledEndTime?.toISOString(),
         location: e.entityMetadata?.location,
         creatorId: e.creatorId,
-        interested: [], // Would need to fetch for each event
+        interested: interestedByEvent.get(e.id) ?? [],
       }))
     );
   });

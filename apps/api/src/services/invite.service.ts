@@ -23,7 +23,7 @@ export async function createInvite(
   const expiresAt =
     maxAge > 0 ? new Date(Date.now() + maxAge * 1000) : null;
 
-  const [invite] = await db
+  await db
     .insert(schema.invites)
     .values({
       code,
@@ -34,8 +34,13 @@ export async function createInvite(
       maxUses: options?.maxUses ?? 0,
       temporary: options?.temporary ?? false,
       expiresAt,
-    })
-    .returning();
+    });
+
+  const [invite] = await db
+    .select()
+    .from(schema.invites)
+    .where(eq(schema.invites.code, code))
+    .limit(1);
 
   return invite!;
 }
@@ -118,10 +123,15 @@ export async function getGuildInvites(guildId: string) {
 }
 
 export async function deleteInvite(code: string) {
-  const [deleted] = await db
-    .delete(schema.invites)
+  const [existing] = await db
+    .select()
+    .from(schema.invites)
     .where(eq(schema.invites.code, code))
-    .returning();
+    .limit(1);
 
-  if (!deleted) throw new ApiError(404, "Invite not found");
+  if (!existing) throw new ApiError(404, "Invite not found");
+
+  await db
+    .delete(schema.invites)
+    .where(eq(schema.invites.code, code));
 }

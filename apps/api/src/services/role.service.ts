@@ -1,8 +1,9 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
 import type { CreateRoleRequest } from "@yxc/types";
+import { invalidateGuildPermissions, invalidatePermissions } from "./permission.service.js";
 
 export async function createRole(guildId: string, data: CreateRoleRequest) {
   // Get highest position to put new role above @everyone
@@ -14,7 +15,7 @@ export async function createRole(guildId: string, data: CreateRoleRequest) {
   const maxPosition = existing.reduce((max, r) => Math.max(max, r.position), 0);
 
   const id = generateSnowflake();
-  const [role] = await db
+  await db
     .insert(schema.roles)
     .values({
       id,
@@ -25,8 +26,13 @@ export async function createRole(guildId: string, data: CreateRoleRequest) {
       permissions: data.permissions ?? "0",
       mentionable: data.mentionable ?? false,
       position: maxPosition + 1,
-    })
-    .returning();
+    });
+
+  const [role] = await db
+    .select()
+    .from(schema.roles)
+    .where(eq(schema.roles.id, id))
+    .limit(1);
 
   return { ...role!, createdAt: role!.createdAt.toISOString() };
 }
@@ -54,31 +60,46 @@ export async function updateRole(
     position?: number;
   }
 ) {
-  const [updated] = await db
+  await db
     .update(schema.roles)
     .set(data)
+    .where(eq(schema.roles.id, roleId));
+
+  const [updated] = await db
+    .select()
+    .from(schema.roles)
     .where(eq(schema.roles.id, roleId))
-    .returning();
+    .limit(1);
 
   if (!updated) throw new ApiError(404, "Role not found");
+
+  if (data.permissions !== undefined) {
+    await invalidateGuildPermissions(updated.guildId);
+  }
+
   return { ...updated, createdAt: updated.createdAt.toISOString() };
 }
 
 export async function deleteRole(roleId: string, guildId: string) {
-  // Prevent deleting @everyone
   if (roleId === guildId) {
     throw new ApiError(400, "Cannot delete @everyone role");
   }
 
-  // Remove role from all members
   await db.delete(schema.memberRoles).where(eq(schema.memberRoles.roleId, roleId));
 
   const [deleted] = await db
-    .delete(schema.roles)
+    .select()
+    .from(schema.roles)
     .where(eq(schema.roles.id, roleId))
-    .returning();
+    .limit(1);
 
   if (!deleted) throw new ApiError(404, "Role not found");
+
+  await db
+    .delete(schema.roles)
+    .where(eq(schema.roles.id, roleId));
+
+  await invalidateGuildPermissions(guildId);
 }
 
 export async function addRoleToMember(
@@ -89,7 +110,9 @@ export async function addRoleToMember(
   await db
     .insert(schema.memberRoles)
     .values({ userId, guildId, roleId })
-    .onConflictDoNothing();
+    .onDuplicateKeyUpdate({ set: { userId: sql`user_id` } });
+
+  await invalidatePermissions(userId, guildId);
 }
 
 export async function removeRoleFromMember(
@@ -106,6 +129,8 @@ export async function removeRoleFromMember(
         eq(schema.memberRoles.roleId, roleId)
       )
     );
+
+  await invalidatePermissions(userId, guildId);
 }
 
 export async function getMemberRoles(guildId: string, userId: string) {

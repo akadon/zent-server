@@ -11,10 +11,16 @@ export async function createQueueItem(
   reportedBy: string
 ) {
   const id = generateSnowflake();
-  const [item] = await db
+  await db
     .insert(schema.moderationQueue)
-    .values({ id, guildId, type, targetId, reason, reportedBy })
-    .returning();
+    .values({ id, guildId, type, targetId, reason, reportedBy });
+
+  const [item] = await db
+    .select()
+    .from(schema.moderationQueue)
+    .where(eq(schema.moderationQueue.id, id))
+    .limit(1);
+
   return {
     ...item!,
     createdAt: item!.createdAt.toISOString(),
@@ -57,7 +63,7 @@ export async function resolveQueueItem(
   if (!item) throw new ApiError(404, "Queue item not found");
   if (item.status !== "pending") throw new ApiError(400, "Item already resolved");
 
-  const [updated] = await db
+  await db
     .update(schema.moderationQueue)
     .set({
       status: action as any,
@@ -65,8 +71,13 @@ export async function resolveQueueItem(
       moderatorNote: note ?? null,
       resolvedAt: new Date(),
     })
+    .where(eq(schema.moderationQueue.id, itemId));
+
+  const [updated] = await db
+    .select()
+    .from(schema.moderationQueue)
     .where(eq(schema.moderationQueue.id, itemId))
-    .returning();
+    .limit(1);
 
   return {
     ...updated!,

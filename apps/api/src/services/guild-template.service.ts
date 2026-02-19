@@ -100,7 +100,7 @@ export async function createTemplate(
   const code = generateTemplateCode();
   const serializedGuild = await serializeGuild(guildId);
 
-  const [template] = await db
+  await db
     .insert(schema.guildTemplates)
     .values({
       code,
@@ -109,8 +109,13 @@ export async function createTemplate(
       description,
       creatorId,
       serializedGuild,
-    })
-    .returning();
+    });
+
+  const [template] = await db
+    .select()
+    .from(schema.guildTemplates)
+    .where(eq(schema.guildTemplates.code, code))
+    .limit(1);
 
   if (!template) {
     throw new ApiError(500, "Failed to create template");

@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { env } from "../config/env.js";
 import { generateSnowflake } from "@yxc/snowflake";
+import { redis } from "../config/redis.js";
 
 const SALT_ROUNDS = 12;
 const TOKEN_EXPIRY = "7d";
@@ -70,15 +71,17 @@ export async function register(email: string, username: string, password: string
   const id = generateSnowflake();
   const passwordHash = await hashPassword(password);
 
-  const [user] = await db
+  await db
     .insert(schema.users)
     .values({
       id,
       email: email.toLowerCase(),
       username,
       passwordHash,
-    })
-    .returning({
+    });
+
+  const [user] = await db
+    .select({
       id: schema.users.id,
       username: schema.users.username,
       displayName: schema.users.displayName,
@@ -94,7 +97,9 @@ export async function register(email: string, username: string, password: string
       premiumType: schema.users.premiumType,
       locale: schema.users.locale,
       createdAt: schema.users.createdAt,
-    });
+    })
+    .from(schema.users)
+    .where(eq(schema.users.id, id));
 
   const token = generateToken(user!.id);
   return { token, user: { ...user!, createdAt: user!.createdAt.toISOString() } };
@@ -153,7 +158,17 @@ export async function login(email: string, password: string) {
   };
 }
 
+const USER_CACHE_TTL = 60; // seconds
+
 export async function getUserById(userId: string) {
+  const cacheKey = `user:${userId}`;
+  const cached = await redis.get(cacheKey);
+  if (cached) {
+    const parsed = JSON.parse(cached);
+    parsed.createdAt = new Date(parsed.createdAt);
+    return parsed;
+  }
+
   const [user] = await db
     .select({
       id: schema.users.id,
@@ -176,7 +191,15 @@ export async function getUserById(userId: string) {
     .where(eq(schema.users.id, userId))
     .limit(1);
 
+  if (user) {
+    await redis.set(cacheKey, JSON.stringify(user), "EX", USER_CACHE_TTL);
+  }
+
   return user ?? null;
+}
+
+export async function invalidateUserCache(userId: string) {
+  await redis.del(`user:${userId}`);
 }
 
 // ── Error class ──

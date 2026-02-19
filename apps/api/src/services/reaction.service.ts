@@ -1,4 +1,4 @@
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, isNull } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { ApiError } from "./auth.service.js";
 
@@ -25,7 +25,7 @@ export async function addReaction(
       emojiName,
       emojiId: emojiId ?? null,
     })
-    .onConflictDoNothing();
+    .onDuplicateKeyUpdate({ set: { messageId: sql`message_id` } });
 
   return { messageId, channelId: message.channelId, emojiName, emojiId: emojiId ?? null };
 }
@@ -44,6 +44,8 @@ export async function removeReaction(
 
   if (emojiId) {
     conditions.push(eq(schema.messageReactions.emojiId, emojiId));
+  } else {
+    conditions.push(isNull(schema.messageReactions.emojiId));
   }
 
   await db.delete(schema.messageReactions).where(and(...conditions));

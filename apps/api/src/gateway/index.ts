@@ -16,14 +16,18 @@ import type {
   ReadyPayload,
   PresenceUpdatePayload,
   RequestGuildMembersPayload,
+  VoiceStateUpdatePayload,
 } from "@yxc/gateway-types";
 import { GatewayIntentBits } from "@yxc/gateway-types";
 import crypto from "crypto";
-import { eq } from "drizzle-orm";
+import { eq, and, inArray, or, like, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 
 const HEARTBEAT_INTERVAL = 41250; // ~41s
 const PRESENCE_TTL = 300; // 5 minutes
+const SESSION_TTL = HEARTBEAT_INTERVAL / 1000 + 30; // heartbeat interval + buffer
+const RESUME_WINDOW = 300; // 5 minutes
+const RESUME_BUFFER_MAX = 500;
 
 interface GatewaySession {
   userId: string;
@@ -32,8 +36,33 @@ interface GatewaySession {
   heartbeatTimer: ReturnType<typeof setTimeout> | null;
   lastHeartbeat: number;
   guilds: string[];
-  resumeBuffer: GatewayPayload[];
   intents: number;
+  rateLimits: Record<number, number[]>;
+}
+
+// Per-opcode rate limits: [maxCount, windowMs]
+const OPCODE_RATE_LIMITS: Record<number, [number, number]> = {
+  [GatewayOp.IDENTIFY]: [1, 5000],
+  [GatewayOp.HEARTBEAT]: [3, 41000],
+  [GatewayOp.PRESENCE_UPDATE]: [5, 60000],
+  [GatewayOp.VOICE_STATE_UPDATE]: [5, 10000],
+  [GatewayOp.REQUEST_GUILD_MEMBERS]: [10, 120000],
+};
+
+function checkOpcodeRateLimit(session: GatewaySession, op: number): boolean {
+  const limit = OPCODE_RATE_LIMITS[op];
+  if (!limit) return true;
+  const [maxCount, windowMs] = limit;
+  const now = Date.now();
+  if (!session.rateLimits[op]) session.rateLimits[op] = [];
+  const timestamps = session.rateLimits[op]!;
+  // Remove expired entries
+  while (timestamps.length > 0 && now - timestamps[0]! > windowMs) {
+    timestamps.shift();
+  }
+  if (timestamps.length >= maxCount) return false;
+  timestamps.push(now);
+  return true;
 }
 
 // Map events to required intents
@@ -101,19 +130,90 @@ const EVENT_INTENTS: Record<string, number> = {
 // Check if session has required intent for event
 function hasIntent(session: GatewaySession, event: string): boolean {
   const requiredIntent = EVENT_INTENTS[event];
-  if (!requiredIntent) return true; // Events without intent requirements pass through
+  if (!requiredIntent) return true;
   return (session.intents & requiredIntent) !== 0;
 }
 
-const sessions = new Map<string, GatewaySession>();
-// Map sessionId -> socketId for resume
-const sessionIndex = new Map<string, string>();
+// ── Redis-backed session storage ──
+// Local hot cache for sessions on this process (avoids Redis round-trip for every dispatch)
+const localSessions = new Map<string, GatewaySession>();
+
+async function storeSession(socketId: string, session: GatewaySession) {
+  localSessions.set(socketId, session);
+  const key = `session:${socketId}`;
+  await redis.hset(key, {
+    userId: session.userId,
+    sessionId: session.sessionId,
+    sequence: session.sequence.toString(),
+    intents: session.intents.toString(),
+    guilds: JSON.stringify(session.guilds),
+  });
+  await redis.expire(key, SESSION_TTL);
+}
+
+async function storeSessionIndex(sessionId: string, socketId: string, intents: number) {
+  const key = `session_idx:${sessionId}`;
+  await redis.hset(key, { socketId, intents: intents.toString() });
+  await redis.expire(key, RESUME_WINDOW);
+}
+
+async function getSessionIndex(sessionId: string): Promise<{ socketId: string; intents: number } | null> {
+  const data = await redis.hgetall(`session_idx:${sessionId}`);
+  if (!data || !data.socketId) return null;
+  return { socketId: data.socketId, intents: parseInt(data.intents ?? "0xFFFFFFFF", 10) };
+}
+
+async function removeSession(socketId: string) {
+  localSessions.delete(socketId);
+  await redis.del(`session:${socketId}`);
+}
+
+async function refreshSessionTTL(socketId: string) {
+  await redis.expire(`session:${socketId}`, SESSION_TTL);
+}
+
+// ── Resume buffer in Redis ──
+
+async function pushResumeEvent(sessionId: string, payload: GatewayPayload) {
+  const key = `resume:${sessionId}`;
+  await redis.rpush(key, JSON.stringify(payload));
+  await redis.ltrim(key, -RESUME_BUFFER_MAX, -1);
+  await redis.expire(key, RESUME_WINDOW);
+}
+
+async function getResumeEvents(sessionId: string, afterSeq: number): Promise<GatewayPayload[]> {
+  const key = `resume:${sessionId}`;
+  const all = await redis.lrange(key, 0, -1);
+  return all
+    .map((s) => JSON.parse(s) as GatewayPayload)
+    .filter((p) => p.s !== undefined && p.s > afterSeq);
+}
+
+async function clearResumeBuffer(sessionId: string) {
+  await redis.del(`resume:${sessionId}`);
+}
+
+// ── Batch presence fetch from Redis ──
+
+async function fetchPresences(userIds: string[], guildId: string) {
+  if (userIds.length === 0) return [];
+  const pipeline = redis.pipeline();
+  for (const uid of userIds) {
+    pipeline.hget(`presence:${uid}`, "status");
+  }
+  const results = await pipeline.exec();
+  return userIds.map((uid, i) => ({
+    userId: uid,
+    guildId,
+    status: (results?.[i]?.[1] as string) ?? "offline",
+  }));
+}
 
 export function createGateway(httpServer: HttpServer) {
   const io = new SocketIOServer(httpServer, {
     path: "/gateway",
     cors: {
-      origin: "*",
+      origin: env.CORS_ORIGIN.split(","),
       methods: ["GET", "POST"],
     },
     transports: ["websocket", "polling"],
@@ -121,6 +221,15 @@ export function createGateway(httpServer: HttpServer) {
 
   // Redis adapter for horizontal scaling
   io.adapter(createAdapter(redisPub, redisSub));
+
+  // Cleanup stale localSessions entries every 60s
+  setInterval(() => {
+    for (const socketId of localSessions.keys()) {
+      if (!io.sockets.sockets.has(socketId)) {
+        localSessions.delete(socketId);
+      }
+    }
+  }, 60_000);
 
   // Subscribe to gateway events from API routes via Redis pub/sub
   const gatewaySub = new Redis(env.REDIS_URL);
@@ -135,26 +244,21 @@ export function createGateway(httpServer: HttpServer) {
         const roomName = `guild:${guildId}`;
         const socketsInRoom = await io.in(roomName).fetchSockets();
 
-        // Send to each socket that has the required intent
         for (const remoteSocket of socketsInRoom) {
-          const socketSession = sessions.get(remoteSocket.id);
+          const socketSession = localSessions.get(remoteSocket.id);
           if (!socketSession) continue;
 
-          // Check if session has required intent (or no intent required)
           if (requiredIntent && (socketSession.intents & requiredIntent) === 0) {
-            continue; // Skip this socket - doesn't have required intent
+            continue;
           }
 
-          // Strip message content if MESSAGE_CONTENT intent not set
           let eventData = parsed.data;
           if (parsed.event.startsWith("MESSAGE_") && parsed.data && typeof parsed.data === "object") {
             const messageData = parsed.data as Record<string, unknown>;
             if ((socketSession.intents & GatewayIntentBits.MESSAGE_CONTENT) === 0) {
-              // Check if bot is mentioned or is author (exceptions to MESSAGE_CONTENT)
               const mentions = (messageData.mentions as string[]) ?? [];
               const authorId = messageData.authorId as string;
               if (authorId !== socketSession.userId && !mentions.includes(socketSession.userId)) {
-                // Strip content, embeds, attachments, components
                 eventData = {
                   ...messageData,
                   content: "",
@@ -173,12 +277,15 @@ export function createGateway(httpServer: HttpServer) {
             d: eventData,
           };
           remoteSocket.emit("message", payload);
+
+          // Push to resume buffer
+          pushResumeEvent(socketSession.sessionId, payload);
         }
       } else if (channel.startsWith("gateway:user:")) {
         const userId = channel.replace("gateway:user:", "");
         const socketsInUserRoom = await io.in(`user:${userId}`).fetchSockets();
         for (const remoteSocket of socketsInUserRoom) {
-          const socketSession = sessions.get(remoteSocket.id);
+          const socketSession = localSessions.get(remoteSocket.id);
           if (!socketSession) continue;
           const payload: GatewayPayload = {
             op: GatewayOp.DISPATCH,
@@ -187,6 +294,7 @@ export function createGateway(httpServer: HttpServer) {
             d: parsed.data,
           };
           remoteSocket.emit("message", payload);
+          pushResumeEvent(socketSession.sessionId, payload);
         }
       }
     } catch {
@@ -206,6 +314,12 @@ export function createGateway(httpServer: HttpServer) {
 
     socket.on("message", async (payload: GatewayPayload) => {
       try {
+        // Per-opcode rate limiting
+        if (session && !checkOpcodeRateLimit(session, payload.op)) {
+          socket.emit("message", { op: GatewayOp.INVALID_SESSION, d: false });
+          return;
+        }
+
         switch (payload.op) {
           case GatewayOp.IDENTIFY:
             await handleIdentify(socket, payload.d as IdentifyPayload);
@@ -225,18 +339,26 @@ export function createGateway(httpServer: HttpServer) {
             await handleResume(socket, payload.d as { token: string; sessionId: string; seq: number });
             break;
 
+          case GatewayOp.VOICE_STATE_UPDATE:
+            if (session) {
+              await handleVoiceStateUpdate(session, payload.d as VoiceStateUpdatePayload);
+            }
+            break;
+
           case GatewayOp.REQUEST_GUILD_MEMBERS:
             if (session) {
               await handleRequestGuildMembers(socket, session, payload.d as RequestGuildMembersPayload);
             }
             break;
         }
-      } catch (err) {
-        console.error("Gateway error:", err);
-        socket.emit("message", {
-          op: GatewayOp.INVALID_SESSION,
-          d: false,
-        });
+      } catch (err: any) {
+        // Differentiate auth errors from internal errors
+        if (err?.name === "TokenExpiredError" || err?.name === "JsonWebTokenError") {
+          socket.emit("message", { op: GatewayOp.INVALID_SESSION, d: false });
+        } else {
+          console.error("Gateway error:", err);
+          // Don't invalidate session on internal errors — just log
+        }
       }
     });
 
@@ -244,33 +366,32 @@ export function createGateway(httpServer: HttpServer) {
       if (session) {
         if (session.heartbeatTimer) clearTimeout(session.heartbeatTimer);
 
-        // Set user offline
         await setPresence(session.userId, "offline", null);
 
-        // Broadcast offline status to all guilds via Redis pub/sub so sequence is handled per-socket
-        for (const guildId of session.guilds) {
-          socket.leave(`guild:${guildId}`);
-          await redisPub.publish(
-            `gateway:guild:${guildId}`,
-            JSON.stringify({
-              event: "PRESENCE_UPDATE",
-              data: {
-                userId: session.userId,
-                guildId,
-                status: "offline",
-                customStatus: null,
-              },
-            })
-          );
+        // Pipeline all presence broadcasts instead of sequential awaits
+        if (session.guilds.length > 0) {
+          const pipeline = redisPub.pipeline();
+          for (const guildId of session.guilds) {
+            socket.leave(`guild:${guildId}`);
+            pipeline.publish(
+              `gateway:guild:${guildId}`,
+              JSON.stringify({
+                event: "PRESENCE_UPDATE",
+                data: {
+                  userId: session.userId,
+                  guildId,
+                  status: "offline",
+                  customStatus: null,
+                },
+              })
+            );
+          }
+          await pipeline.exec();
         }
 
-        // Keep session in index for 5 minutes for resume
-        const sid = session.sessionId;
-        setTimeout(() => {
-          sessionIndex.delete(sid);
-        }, 5 * 60 * 1000);
-
-        sessions.delete(socket.id);
+        // Store session index in Redis for resume (TTL handles cleanup)
+        await storeSessionIndex(session.sessionId, socket.id, session.intents);
+        await removeSession(socket.id);
       }
     });
 
@@ -286,10 +407,12 @@ export function createGateway(httpServer: HttpServer) {
       }
 
       const sessionId = crypto.randomUUID();
-      const userGuilds = await getUserGuilds(user.id);
-      const readStates = await getReadStates(user.id);
-      const relationships = await getRelationships(user.id);
-      const dmChannels = await getUserDMChannels(user.id);
+      const [userGuilds, readStates, relationships, dmChannels] = await Promise.all([
+        getUserGuilds(user.id),
+        getReadStates(user.id),
+        getRelationships(user.id),
+        getUserDMChannels(user.id),
+      ]);
 
       session = {
         userId: user.id,
@@ -298,11 +421,13 @@ export function createGateway(httpServer: HttpServer) {
         heartbeatTimer: null,
         lastHeartbeat: Date.now(),
         guilds: userGuilds.map((g) => g.id),
-        resumeBuffer: [],
-        intents: data.intents ?? 0xFFFFFFFF, // Default: all intents if not specified
+        intents: data.intents ?? 0xFFFFFFFF,
+        rateLimits: {},
       };
-      sessions.set(socket.id, session);
-      sessionIndex.set(sessionId, socket.id);
+
+      // Store session in Redis + local cache
+      await storeSession(socket.id, session);
+      await storeSessionIndex(sessionId, socket.id, session.intents);
 
       // Join guild rooms
       for (const guild of userGuilds) {
@@ -313,15 +438,19 @@ export function createGateway(httpServer: HttpServer) {
       // Set user online
       await setPresence(user.id, "online", null);
 
-      // Broadcast online to all guilds via Redis pub/sub so sequence is handled per-socket
-      for (const guild of userGuilds) {
-        await redisPub.publish(
-          `gateway:guild:${guild.id}`,
-          JSON.stringify({
-            event: "PRESENCE_UPDATE",
-            data: { userId: user.id, guildId: guild.id, status: "online", customStatus: null },
-          })
-        );
+      // Pipeline all presence broadcasts
+      if (userGuilds.length > 0) {
+        const pipeline = redisPub.pipeline();
+        for (const guild of userGuilds) {
+          pipeline.publish(
+            `gateway:guild:${guild.id}`,
+            JSON.stringify({
+              event: "PRESENCE_UPDATE",
+              data: { userId: user.id, guildId: guild.id, status: "online", customStatus: null },
+            })
+          );
+        }
+        await pipeline.exec();
       }
 
       // Send READY
@@ -359,15 +488,21 @@ export function createGateway(httpServer: HttpServer) {
           return;
         }
 
-        // Check if session exists
-        const oldSocketId = sessionIndex.get(data.sessionId);
-        if (!oldSocketId) {
-          // Session expired, must re-identify
+        // Check if session exists in Redis
+        const sessionData = await getSessionIndex(data.sessionId);
+        if (!sessionData) {
           socket.emit("message", { op: GatewayOp.INVALID_SESSION, d: false });
           return;
         }
 
-        // Recreate session
+        // Validate that the session belongs to this user
+        const fullSession = await redis.hgetall(`session:${sessionData.socketId}`);
+        if (fullSession?.userId && fullSession.userId !== tokenPayload.userId) {
+          socket.emit("message", { op: GatewayOp.INVALID_SESSION, d: false });
+          return;
+        }
+
+        // Restore original intents from Redis instead of defaulting to all
         const userGuilds = await getUserGuilds(user.id);
         session = {
           userId: user.id,
@@ -376,11 +511,12 @@ export function createGateway(httpServer: HttpServer) {
           heartbeatTimer: null,
           lastHeartbeat: Date.now(),
           guilds: userGuilds.map((g) => g.id),
-          resumeBuffer: [],
-          intents: 0xFFFFFFFF, // On resume, use all intents (original intents not preserved)
+          intents: sessionData.intents,
+          rateLimits: {},
         };
-        sessions.set(socket.id, session);
-        sessionIndex.set(data.sessionId, socket.id);
+
+        await storeSession(socket.id, session);
+        await storeSessionIndex(data.sessionId, socket.id, session.intents);
 
         // Rejoin rooms
         for (const guild of userGuilds) {
@@ -388,8 +524,19 @@ export function createGateway(httpServer: HttpServer) {
         }
         socket.join(`user:${user.id}`);
 
-        // Set online
         await setPresence(user.id, "online", null);
+
+        // Replay missed events from resume buffer
+        const missedEvents = await getResumeEvents(data.sessionId, data.seq);
+        for (const event of missedEvents) {
+          socket.emit("message", event);
+        }
+        // Always advance sequence past the last replayed event
+        if (missedEvents.length > 0) {
+          session.sequence = (missedEvents[missedEvents.length - 1]!.s ?? data.seq) + 1;
+        }
+
+        await clearResumeBuffer(data.sessionId);
 
         // Send RESUMED
         socket.emit("message", {
@@ -407,30 +554,109 @@ export function createGateway(httpServer: HttpServer) {
 
     async function handlePresenceUpdate(session: GatewaySession, data: PresenceUpdatePayload) {
       const activities = (data as any).activities ?? [];
+
+      // Normalize customStatus: frontend may send a plain string instead of {text, emoji}
+      let customStatus = data.customStatus ?? null;
+      if (typeof customStatus === "string") {
+        customStatus = { text: customStatus };
+      }
+
       await setPresence(
         session.userId,
         data.status,
-        data.customStatus ?? null,
+        customStatus,
         activities
       );
 
-      // Broadcast to all guilds via Redis pub/sub so sequence is handled per-socket
-      for (const guildId of session.guilds) {
-        await redisPub.publish(
-          `gateway:guild:${guildId}`,
-          JSON.stringify({
-            event: "PRESENCE_UPDATE",
-            data: {
-              userId: session.userId,
-              guildId,
-              status: data.status,
-              customStatus: data.customStatus ?? null,
-              activities,
-              clientStatus: { web: data.status },
-            },
-          })
-        );
+      // Pipeline all presence broadcasts
+      if (session.guilds.length > 0) {
+        const pipeline = redisPub.pipeline();
+        for (const guildId of session.guilds) {
+          pipeline.publish(
+            `gateway:guild:${guildId}`,
+            JSON.stringify({
+              event: "PRESENCE_UPDATE",
+              data: {
+                userId: session.userId,
+                guildId,
+                status: data.status,
+                customStatus,
+                activities,
+                clientStatus: { web: data.status },
+              },
+            })
+          );
+        }
+        await pipeline.exec();
       }
+    }
+
+    async function handleVoiceStateUpdate(session: GatewaySession, data: VoiceStateUpdatePayload) {
+      const { guildId, channelId, selfMute, selfDeaf } = data;
+
+      if (!session.guilds.includes(guildId)) return;
+
+      const voiceState = {
+        userId: session.userId,
+        guildId,
+        channelId, // null = disconnect
+        selfMute: selfMute ?? false,
+        selfDeaf: selfDeaf ?? false,
+        selfStream: false,
+        selfVideo: false,
+        suppress: false,
+      };
+
+      // Forward to zent-voice if configured
+      if (env.VOICE_SERVICE_URL) {
+        try {
+          const headers: Record<string, string> = { "Content-Type": "application/json" };
+          if (env.VOICE_INTERNAL_KEY) headers["x-internal-key"] = env.VOICE_INTERNAL_KEY;
+
+          if (channelId) {
+            const res = await fetch(`${env.VOICE_SERVICE_URL}/api/voice/${guildId}/${channelId}/join`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                userId: session.userId,
+                username: "User",
+                channelType: 2,
+                selfMute: selfMute ?? false,
+                selfDeaf: selfDeaf ?? false,
+              }),
+            });
+            if (res.ok) {
+              const body = await res.json() as { livekitToken?: string; livekitUrl?: string };
+              if (body.livekitToken && body.livekitUrl) {
+                // Dispatch to all sessions of this user via Redis
+                await redisPub.publish(
+                  `gateway:user:${session.userId}`,
+                  JSON.stringify({
+                    event: "VOICE_SERVER_UPDATE",
+                    data: { guildId, channelId, token: body.livekitToken, endpoint: body.livekitUrl },
+                  })
+                );
+              }
+            }
+          } else {
+            await fetch(`${env.VOICE_SERVICE_URL}/api/voice/${guildId}/leave`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ userId: session.userId }),
+            });
+          }
+        } catch (err) {
+          console.error("Voice service forwarding failed:", err);
+        }
+      }
+
+      await redisPub.publish(
+        `gateway:guild:${guildId}`,
+        JSON.stringify({
+          event: "VOICE_STATE_UPDATE",
+          data: voiceState,
+        })
+      );
     }
 
     async function handleHeartbeat(
@@ -439,8 +665,11 @@ export function createGateway(httpServer: HttpServer) {
       if (session) {
         session.lastHeartbeat = Date.now();
         resetHeartbeatTimer(socket);
-        // Refresh presence TTL on heartbeat
-        await redis.expire(`presence:${session.userId}`, PRESENCE_TTL);
+        // Refresh presence and session TTL
+        await Promise.all([
+          redis.expire(`presence:${session.userId}`, PRESENCE_TTL),
+          refreshSessionTTL(socket.id),
+        ]);
       }
       socket.emit("message", { op: GatewayOp.HEARTBEAT_ACK, d: null });
     }
@@ -450,41 +679,120 @@ export function createGateway(httpServer: HttpServer) {
       session: GatewaySession,
       data: RequestGuildMembersPayload
     ) {
-      // Check if session has GUILD_MEMBERS intent
       if ((session.intents & GatewayIntentBits.GUILD_MEMBERS) === 0) {
-        return; // Silently ignore if no intent
+        return;
       }
-
-      // Import member service dynamically to avoid circular deps
-      const memberService = await import("../services/member.service.js");
 
       let members: any[] = [];
 
       if (data.userIds && data.userIds.length > 0) {
-        // Fetch specific members
-        for (const userId of data.userIds.slice(0, 100)) {
-          const member = await memberService.getMember(data.guildId, userId);
-          if (member) members.push(member);
+        // Batch fetch specific members
+        const userIds = data.userIds.slice(0, 100);
+        const memberRows = await db
+          .select({
+            member: schema.members,
+            user: {
+              id: schema.users.id,
+              username: schema.users.username,
+              displayName: schema.users.displayName,
+              avatar: schema.users.avatar,
+              status: schema.users.status,
+            },
+          })
+          .from(schema.members)
+          .leftJoin(schema.users, eq(schema.members.userId, schema.users.id))
+          .where(
+            and(
+              eq(schema.members.guildId, data.guildId),
+              inArray(schema.members.userId, userIds)
+            )
+          );
+
+        const foundUserIds = memberRows.map((r) => r.member.userId);
+        const allRoles = foundUserIds.length > 0
+          ? await db
+              .select({ userId: schema.memberRoles.userId, roleId: schema.memberRoles.roleId })
+              .from(schema.memberRoles)
+              .where(
+                and(
+                  eq(schema.memberRoles.guildId, data.guildId),
+                  inArray(schema.memberRoles.userId, foundUserIds)
+                )
+              )
+          : [];
+
+        const roleMap = new Map<string, string[]>();
+        for (const r of allRoles) {
+          const list = roleMap.get(r.userId) ?? [];
+          list.push(r.roleId);
+          roleMap.set(r.userId, list);
         }
+
+        members = memberRows.map((row) => ({
+          ...row.member,
+          joinedAt: row.member.joinedAt.toISOString(),
+          premiumSince: row.member.premiumSince?.toISOString() ?? null,
+          communicationDisabledUntil: row.member.communicationDisabledUntil?.toISOString() ?? null,
+          user: row.user ?? null,
+          roles: roleMap.get(row.member.userId) ?? [],
+        }));
       } else if (data.query !== undefined) {
-        // Search members by query
-        const allMembers = await memberService.getGuildMembers(data.guildId);
-        const query = data.query.toLowerCase();
-        members = allMembers.filter((m: any) => {
-          const username = m.user?.username?.toLowerCase() ?? "";
-          const nick = m.nickname?.toLowerCase() ?? "";
-          return username.startsWith(query) || nick.startsWith(query);
-        }).slice(0, data.limit ?? 1);
+        // DB-side LIKE search
+        const queryPattern = `${data.query}%`;
+        const limit = data.limit ?? 1;
+
+        const memberRows = await db
+          .select({
+            member: schema.members,
+            user: {
+              id: schema.users.id,
+              username: schema.users.username,
+              displayName: schema.users.displayName,
+              avatar: schema.users.avatar,
+              status: schema.users.status,
+            },
+          })
+          .from(schema.members)
+          .leftJoin(schema.users, eq(schema.members.userId, schema.users.id))
+          .where(
+            and(
+              eq(schema.members.guildId, data.guildId),
+              data.query === ""
+                ? undefined
+                : or(
+                    like(schema.users.username, queryPattern),
+                    like(schema.members.nickname, queryPattern)
+                  )
+            )
+          )
+          .limit(limit);
+
+        members = memberRows.map((row) => ({
+          ...row.member,
+          joinedAt: row.member.joinedAt.toISOString(),
+          premiumSince: row.member.premiumSince?.toISOString() ?? null,
+          communicationDisabledUntil: row.member.communicationDisabledUntil?.toISOString() ?? null,
+          user: row.user ?? null,
+          roles: [],
+        }));
       } else {
-        // Get all members (paginated)
+        const memberService = await import("../services/member.service.js");
         members = await memberService.getGuildMembers(data.guildId);
         members = members.slice(0, data.limit ?? 1000);
       }
+
+      // Fetch actual presences from Redis if requested
+      const presences = data.presences
+        ? await fetchPresences(members.map((m: any) => m.user?.id ?? m.userId), data.guildId)
+        : undefined;
 
       // Send GUILD_MEMBERS_CHUNK
       const chunkSize = 1000;
       for (let i = 0; i < members.length; i += chunkSize) {
         const chunk = members.slice(i, i + chunkSize);
+        const chunkPresences = presences
+          ? presences.slice(i, i + chunkSize)
+          : undefined;
         socket.emit("message", {
           op: GatewayOp.DISPATCH,
           t: "GUILD_MEMBERS_CHUNK",
@@ -495,11 +803,7 @@ export function createGateway(httpServer: HttpServer) {
             chunkIndex: Math.floor(i / chunkSize),
             chunkCount: Math.ceil(members.length / chunkSize),
             notFound: [],
-            presences: data.presences ? chunk.map((m: any) => ({
-              userId: m.user?.id ?? m.userId,
-              guildId: data.guildId,
-              status: "online", // Would need to fetch actual presence
-            })) : undefined,
+            presences: chunkPresences,
             nonce: data.nonce,
           },
         });
@@ -517,6 +821,24 @@ export function createGateway(httpServer: HttpServer) {
       }
     }
   });
+
+  // ── Graceful shutdown ──
+  const shutdown = async () => {
+    // Send RECONNECT opcode to all local sessions so clients reconnect to another instance
+    for (const [socketId, session] of localSessions) {
+      const socket = io.sockets.sockets.get(socketId);
+      if (socket) {
+        socket.emit("message", { op: GatewayOp.RECONNECT, d: null });
+        // Store session index for resume
+        await storeSessionIndex(session.sessionId, socketId, session.intents);
+        socket.disconnect(true);
+      }
+    }
+    localSessions.clear();
+  };
+
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 
   return io;
 }
@@ -556,15 +878,13 @@ async function setPresence(
         activities: activities as any,
         updatedAt: new Date(),
       })
-      .onConflictDoUpdate({
-        target: schema.userActivities.userId,
+      .onDuplicateKeyUpdate({
         set: {
           activities: activities as any,
           updatedAt: new Date(),
         },
       });
   } else {
-    // Clear activities
     await db
       .delete(schema.userActivities)
       .where(eq(schema.userActivities.userId, userId));
@@ -582,12 +902,12 @@ export async function dispatchToGuild(
 ) {
   const socketsInRoom = await io.in(`guild:${guildId}`).fetchSockets();
   for (const remoteSocket of socketsInRoom) {
-    const socketSession = sessions.get(remoteSocket.id);
-    const seq = socketSession ? socketSession.sequence++ : 0;
+    const socketSession = localSessions.get(remoteSocket.id);
+    if (!socketSession) continue;
     const payload: GatewayPayload = {
       op: GatewayOp.DISPATCH,
       t: event as any,
-      s: seq,
+      s: socketSession.sequence++,
       d: data,
     };
     remoteSocket.emit("message", payload);
@@ -602,12 +922,12 @@ export async function dispatchToUser(
 ) {
   const socketsInRoom = await io.in(`user:${userId}`).fetchSockets();
   for (const remoteSocket of socketsInRoom) {
-    const socketSession = sessions.get(remoteSocket.id);
-    const seq = socketSession ? socketSession.sequence++ : 0;
+    const socketSession = localSessions.get(remoteSocket.id);
+    if (!socketSession) continue;
     const payload: GatewayPayload = {
       op: GatewayOp.DISPATCH,
       t: event as any,
-      s: seq,
+      s: socketSession.sequence++,
       d: data,
     };
     remoteSocket.emit("message", payload);

@@ -8,6 +8,7 @@ import * as channelService from "../../services/channel.service.js";
 import * as readStateService from "../../services/readstate.service.js";
 import * as fileService from "../../services/file.service.js";
 import * as messageComponentService from "../../services/message-component.service.js";
+import * as notificationService from "../../services/notification.service.js";
 import { ApiError } from "../../services/auth.service.js";
 import * as permissionService from "../../services/permission.service.js";
 import { PermissionFlags } from "@yxc/permissions";
@@ -90,7 +91,7 @@ export async function messageRoutes(app: FastifyInstance) {
       })
       .parse(request.query);
 
-    const messages = await messageService.getChannelMessages(channelId, query);
+    const messages = await messageService.getChannelMessages(channelId, query, request.userId);
     return reply.send(messages);
   });
 
@@ -145,6 +146,23 @@ export async function messageRoutes(app: FastifyInstance) {
       }
 
       await dispatchMessage(channelId, "MESSAGE_CREATE", fullMessage ?? message);
+
+      // Send notifications for mentioned users
+      const mentionRegex = /<@(\d+)>/g;
+      let match: RegExpExecArray | null;
+      while ((match = mentionRegex.exec(body.content)) !== null) {
+        const mentionedUserId = match[1]!;
+        if (mentionedUserId !== request.userId) {
+          const channel = await channelService.getChannel(channelId);
+          notificationService.createNotification(mentionedUserId, "mention", "You were mentioned", {
+            body: body.content.slice(0, 200),
+            sourceGuildId: channel?.guildId ?? undefined,
+            sourceChannelId: channelId,
+            sourceMessageId: message.id,
+            sourceUserId: request.userId,
+          }).catch(() => {}); // fire and forget
+        }
+      }
 
       return reply.status(201).send(fullMessage ?? message);
     }
@@ -396,11 +414,12 @@ export async function messageRoutes(app: FastifyInstance) {
       const [emojiName, emojiId] = emoji.includes(":") ? emoji.split(":") : [emoji, undefined];
       await reactionService.removeReaction(messageId, request.userId, emojiName!, emojiId);
 
+      const channel = await channelService.getChannel(channelId);
       await dispatchMessage(channelId, "MESSAGE_REACTION_REMOVE", {
         userId: request.userId,
         channelId,
         messageId,
-        guildId: null,
+        guildId: channel?.guildId ?? null,
         emoji: { id: emojiId ?? null, name: emojiName },
       });
 
@@ -437,19 +456,21 @@ export async function messageRoutes(app: FastifyInstance) {
 
   app.get("/channels/:channelId/pins", async (request, reply) => {
     const { channelId } = request.params as { channelId: string };
-    const messages = await messageService.getPinnedMessages(channelId);
+    const messages = await messageService.getPinnedMessages(channelId, request.userId);
     return reply.send(messages);
   });
 
   app.put("/channels/:channelId/pins/:messageId", async (request, reply) => {
-    const { messageId } = request.params as { messageId: string };
+    const { channelId, messageId } = request.params as { channelId: string; messageId: string };
     await messageService.pinMessage(messageId);
+    await dispatchMessage(channelId, "CHANNEL_PINS_UPDATE", { channelId });
     return reply.status(204).send();
   });
 
   app.delete("/channels/:channelId/pins/:messageId", async (request, reply) => {
-    const { messageId } = request.params as { messageId: string };
+    const { channelId, messageId } = request.params as { channelId: string; messageId: string };
     await messageService.unpinMessage(messageId);
+    await dispatchMessage(channelId, "CHANNEL_PINS_UPDATE", { channelId });
     return reply.status(204).send();
   });
 }
