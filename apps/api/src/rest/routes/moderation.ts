@@ -3,14 +3,19 @@ import { z } from "zod";
 import { authMiddleware } from "../../middleware/auth.js";
 import * as moderationQueueService from "../../services/moderation-queue.service.js";
 import * as permissionService from "../../services/permission.service.js";
+import * as guildService from "../../services/guild.service.js";
+import { ApiError } from "../../services/auth.service.js";
 import { PermissionFlags } from "@yxc/permissions";
 
 export async function moderationRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authMiddleware);
 
-  // Create a moderation queue item (report) - any member can report
+  // Create a moderation queue item (report) - any guild member can report
   app.post("/guilds/:guildId/moderation/queue", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
+    if (!(await guildService.isMember(request.userId, guildId))) {
+      throw new ApiError(403, "Not a member of this guild");
+    }
     const body = z
       .object({
         type: z.enum(["message", "user", "automod"]),

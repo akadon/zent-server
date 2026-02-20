@@ -15,24 +15,26 @@ export async function createPoll(
     ? new Date(Date.now() + opts.duration * 1000)
     : null;
 
-  await db.insert(schema.polls).values({
-    id: pollId,
-    channelId,
-    messageId,
-    question,
-    allowMultiselect: opts?.allowMultiselect ?? false,
-    anonymous: opts?.anonymous ?? false,
-    expiresAt,
-  });
-
-  for (let i = 0; i < options.length; i++) {
-    await db.insert(schema.pollOptions).values({
-      id: generateSnowflake(),
-      pollId,
-      text: options[i]!,
-      position: i,
+  await db.transaction(async (tx) => {
+    await tx.insert(schema.polls).values({
+      id: pollId,
+      channelId,
+      messageId,
+      question,
+      allowMultiselect: opts?.allowMultiselect ?? false,
+      anonymous: opts?.anonymous ?? false,
+      expiresAt,
     });
-  }
+
+    for (let i = 0; i < options.length; i++) {
+      await tx.insert(schema.pollOptions).values({
+        id: generateSnowflake(),
+        pollId,
+        text: options[i]!,
+        position: i,
+      });
+    }
+  });
 
   return getPoll(pollId);
 }

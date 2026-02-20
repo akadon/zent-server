@@ -68,13 +68,40 @@ export async function cdnRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "No file provided" });
     }
 
+    const ALLOWED_TYPES = new Set([
+      "image/jpeg", "image/png", "image/gif", "image/webp",
+      "video/mp4", "video/webm", "audio/mpeg", "audio/ogg", "audio/wav",
+      "application/pdf", "text/plain", "application/zip", "application/json",
+    ]);
+
+    if (!ALLOWED_TYPES.has(file.mimetype)) {
+      return reply.status(400).send({ error: "File type not allowed" });
+    }
+
+    const buffer = await file.toBuffer();
+
+    // Validate magic bytes for image types
+    const MAGIC_BYTES: Record<string, number[]> = {
+      "image/jpeg": [0xFF, 0xD8, 0xFF],
+      "image/png": [0x89, 0x50, 0x4E, 0x47],
+      "image/gif": [0x47, 0x49, 0x46],
+      "image/webp": [0x52, 0x49, 0x46, 0x46],
+    };
+    const expected = MAGIC_BYTES[file.mimetype];
+    if (expected && (buffer.length < expected.length || !expected.every((b, i) => buffer[i] === b))) {
+      return reply.status(400).send({ error: "File content does not match declared type" });
+    }
+
+    const MAX_FILE_SIZE = 50 * 1024 * 1024;
+    if (buffer.length > MAX_FILE_SIZE) {
+      return reply.status(413).send({ error: "File too large (max 50MB)" });
+    }
+
     const ext = file.filename.includes(".")
       ? file.filename.substring(file.filename.lastIndexOf("."))
       : "";
     const id = crypto.randomUUID();
     const objectName = `${id}${ext}`;
-
-    const buffer = await file.toBuffer();
 
     await minio.putObject(BUCKET, objectName, buffer, buffer.length, {
       "Content-Type": file.mimetype,
@@ -92,6 +119,10 @@ export async function cdnRoutes(app: FastifyInstance) {
   // Serve file by name
   app.get("/files/:filename", async (request, reply) => {
     const { filename } = request.params as { filename: string };
+    // Prevent path traversal
+    if (filename.includes("/") || filename.includes("\\") || filename.includes("..")) {
+      return reply.status(400).send({ error: "Invalid filename" });
+    }
     return serveObject(filename)(request, reply);
   });
 

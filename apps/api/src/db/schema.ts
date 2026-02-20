@@ -141,6 +141,9 @@ export const messages = pgTable(
     index("messages_channel_created_idx").on(table.channelId, table.id),
     index("messages_author_id_idx").on(table.authorId),
     index("messages_expires_at_idx").on(table.expiresAt),
+    index("messages_pinned_idx").on(table.channelId, table.pinned),
+    index("messages_webhook_id_idx").on(table.webhookId),
+    index("messages_reference_idx").on(table.referencedMessageId),
   ]
 );
 
@@ -532,6 +535,7 @@ export const scheduledMessages = pgTable(
   (table) => [
     index("scheduled_messages_scheduled_for_idx").on(table.scheduledFor),
     index("scheduled_messages_author_id_idx").on(table.authorId),
+    index("scheduled_messages_pending_idx").on(table.sent, table.scheduledFor),
   ]
 );
 
@@ -556,6 +560,7 @@ export const notificationLog = pgTable(
   (table) => [
     index("notification_log_user_id_idx").on(table.userId),
     index("notification_log_created_at_idx").on(table.createdAt),
+    index("notification_log_user_read_idx").on(table.userId, table.read),
   ]
 );
 

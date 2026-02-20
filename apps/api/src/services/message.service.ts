@@ -496,7 +496,8 @@ export async function getPinnedMessages(channelId: string, currentUserId?: strin
     .from(schema.messages)
     .leftJoin(schema.users, eq(schema.messages.authorId, schema.users.id))
     .where(and(eq(schema.messages.channelId, channelId), eq(schema.messages.pinned, true)))
-    .orderBy(desc(schema.messages.id));
+    .orderBy(desc(schema.messages.id))
+    .limit(50);
 
   if (rows.length === 0) return [];
 

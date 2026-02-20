@@ -1,4 +1,4 @@
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, count } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { DEFAULT_PERMISSIONS } from "@yxc/permissions";
@@ -85,10 +85,10 @@ export async function getGuild(guildId: string) {
 
   if (!guild) return null;
 
-  const [guildChannels, guildRoles, guildMembers, voiceStates] = await Promise.all([
+  const [guildChannels, guildRoles, memberCountResult, voiceStates] = await Promise.all([
     db.select().from(schema.channels).where(eq(schema.channels.guildId, guildId)),
     db.select().from(schema.roles).where(eq(schema.roles.guildId, guildId)),
-    db.select().from(schema.members).where(eq(schema.members.guildId, guildId)),
+    db.select({ count: count() }).from(schema.members).where(eq(schema.members.guildId, guildId)),
     fetchVoiceStates(guildId),
   ]);
 
@@ -104,13 +104,7 @@ export async function getGuild(guildId: string) {
       ...r,
       createdAt: r.createdAt.toISOString(),
     })),
-    members: guildMembers.map((m) => ({
-      ...m,
-      joinedAt: m.joinedAt.toISOString(),
-      premiumSince: m.premiumSince?.toISOString() ?? null,
-      communicationDisabledUntil: m.communicationDisabledUntil?.toISOString() ?? null,
-    })),
-    memberCount: guildMembers.length,
+    memberCount: memberCountResult[0]?.count ?? 0,
     voiceStates,
   };
 }
@@ -227,15 +221,17 @@ export async function getUserGuilds(userId: string) {
     membersByGuild.set(m.guildId, arr);
   }
 
-  // Fetch voice states for all guilds in parallel
-  const voiceResults = await Promise.allSettled(
-    guilds.map((guild) => fetchVoiceStates(guild.id))
-  );
+  // Fetch voice states with concurrency limit (max 5 at a time)
   const voiceByGuild = new Map<string, any[]>();
-  guilds.forEach((guild, i) => {
-    const result = voiceResults[i]!;
-    voiceByGuild.set(guild.id, result.status === "fulfilled" ? result.value : []);
-  });
+  const BATCH_SIZE = 5;
+  for (let i = 0; i < guilds.length; i += BATCH_SIZE) {
+    const batch = guilds.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(batch.map((g) => fetchVoiceStates(g.id)));
+    batch.forEach((guild, j) => {
+      const result = results[j]!;
+      voiceByGuild.set(guild.id, result.status === "fulfilled" ? result.value : []);
+    });
+  }
 
   return guilds.map((guild) => {
     const guildChannels = channelsByGuild.get(guild.id) ?? [];

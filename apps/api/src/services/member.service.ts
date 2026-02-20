@@ -45,10 +45,6 @@ export async function removeMember(guildId: string, userId: string) {
     throw new ApiError(400, "Cannot remove the guild owner");
   }
 
-  await db
-    .delete(schema.memberRoles)
-    .where(and(eq(schema.memberRoles.userId, userId), eq(schema.memberRoles.guildId, guildId)));
-
   const [removed] = await db
     .select()
     .from(schema.members)
@@ -57,18 +53,24 @@ export async function removeMember(guildId: string, userId: string) {
 
   if (!removed) throw new ApiError(404, "Member not found");
 
-  await db
-    .delete(schema.members)
-    .where(and(eq(schema.members.userId, userId), eq(schema.members.guildId, guildId)));
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(schema.memberRoles)
+      .where(and(eq(schema.memberRoles.userId, userId), eq(schema.memberRoles.guildId, guildId)));
+    await tx
+      .delete(schema.members)
+      .where(and(eq(schema.members.userId, userId), eq(schema.members.guildId, guildId)));
+  });
 
   return removed;
 }
 
-export async function getGuildMembers(guildId: string) {
+export async function getGuildMembers(guildId: string, limit: number = 1000) {
   const memberList = await db
     .select()
     .from(schema.members)
-    .where(eq(schema.members.guildId, guildId));
+    .where(eq(schema.members.guildId, guildId))
+    .limit(limit);
 
   if (memberList.length === 0) return [];
 
