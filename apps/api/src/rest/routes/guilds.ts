@@ -146,6 +146,11 @@ export async function guildRoutes(app: FastifyInstance) {
     const { channelId } = request.params as { channelId: string };
     const channel = await channelService.getChannel(channelId);
     if (!channel) throw new ApiError(404, "Channel not found");
+    if (channel.guildId) {
+      if (!(await guildService.isMember(request.userId, channel.guildId))) {
+        throw new ApiError(403, "Not a member of this guild");
+      }
+    }
     return reply.send(channel);
   });
 
@@ -332,6 +337,7 @@ export async function guildRoutes(app: FastifyInstance) {
         userId: string;
         roleId: string;
       };
+      await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_ROLES);
       await roleService.addRoleToMember(guildId, userId, roleId);
       const roles = await roleService.getMemberRoles(guildId, userId);
       await dispatchGuild(guildId, "GUILD_MEMBER_UPDATE", { guildId, userId, roles });
@@ -348,6 +354,7 @@ export async function guildRoutes(app: FastifyInstance) {
         userId: string;
         roleId: string;
       };
+      await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_ROLES);
       await roleService.removeRoleFromMember(guildId, userId, roleId);
       const roles = await roleService.getMemberRoles(guildId, userId);
       await dispatchGuild(guildId, "GUILD_MEMBER_UPDATE", { guildId, userId, roles });
@@ -662,12 +669,20 @@ export async function guildRoutes(app: FastifyInstance) {
 
   app.put("/channels/:threadId/thread-members/:userId", async (request, reply) => {
     const { threadId, userId } = request.params as { threadId: string; userId: string };
+    const thread = await threadService.getThread(threadId);
+    if (thread?.guildId) {
+      await permissionService.requireGuildPermission(request.userId, thread.guildId, PermissionFlags.MANAGE_THREADS);
+    }
     await threadService.addThreadMember(threadId, userId);
     return reply.status(204).send();
   });
 
   app.delete("/channels/:threadId/thread-members/:userId", async (request, reply) => {
     const { threadId, userId } = request.params as { threadId: string; userId: string };
+    const thread = await threadService.getThread(threadId);
+    if (thread?.guildId) {
+      await permissionService.requireGuildPermission(request.userId, thread.guildId, PermissionFlags.MANAGE_THREADS);
+    }
     await threadService.removeThreadMember(threadId, userId);
     return reply.status(204).send();
   });
@@ -682,6 +697,7 @@ export async function guildRoutes(app: FastifyInstance) {
 
   app.get("/guilds/:guildId/audit-logs", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
+    await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.VIEW_AUDIT_LOG);
     const query = z
       .object({
         userId: z.string().optional(),

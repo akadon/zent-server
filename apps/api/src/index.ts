@@ -96,7 +96,7 @@ app.addContentTypeParser(
 app.addHook("preHandler", globalRateLimit);
 
 // Error handler
-app.setErrorHandler((error, request, reply) => {
+app.setErrorHandler((error: any, request, reply) => {
   if (error instanceof ApiError) {
     return reply.status(error.statusCode).send({
       statusCode: error.statusCode,

@@ -84,6 +84,14 @@ export async function messageRoutes(app: FastifyInstance) {
   // Get channel messages (paginated)
   app.get("/channels/:channelId/messages", async (request, reply) => {
     const { channelId } = request.params as { channelId: string };
+    const channel = await channelService.getChannel(channelId);
+    if (!channel) throw new ApiError(404, "Channel not found");
+    if (channel.guildId) {
+      const { isMember } = await import("../../services/guild.service.js");
+      if (!(await isMember(request.userId, channel.guildId))) {
+        throw new ApiError(403, "Not a member of this guild");
+      }
+    }
     const query = z
       .object({
         before: z.string().optional(),
@@ -457,12 +465,25 @@ export async function messageRoutes(app: FastifyInstance) {
 
   app.get("/channels/:channelId/pins", async (request, reply) => {
     const { channelId } = request.params as { channelId: string };
+    const channel = await channelService.getChannel(channelId);
+    if (!channel) throw new ApiError(404, "Channel not found");
+    if (channel.guildId) {
+      const { isMember } = await import("../../services/guild.service.js");
+      if (!(await isMember(request.userId, channel.guildId))) {
+        throw new ApiError(403, "Not a member of this guild");
+      }
+    }
     const messages = await messageService.getPinnedMessages(channelId, request.userId);
     return reply.send(messages);
   });
 
   app.put("/channels/:channelId/pins/:messageId", async (request, reply) => {
     const { channelId, messageId } = request.params as { channelId: string; messageId: string };
+    const channel = await channelService.getChannel(channelId);
+    if (!channel) throw new ApiError(404, "Channel not found");
+    if (channel.guildId) {
+      await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.MANAGE_MESSAGES);
+    }
     await messageService.pinMessage(messageId);
     await dispatchMessage(channelId, "CHANNEL_PINS_UPDATE", { channelId });
     return reply.status(204).send();
@@ -470,6 +491,11 @@ export async function messageRoutes(app: FastifyInstance) {
 
   app.delete("/channels/:channelId/pins/:messageId", async (request, reply) => {
     const { channelId, messageId } = request.params as { channelId: string; messageId: string };
+    const channel = await channelService.getChannel(channelId);
+    if (!channel) throw new ApiError(404, "Channel not found");
+    if (channel.guildId) {
+      await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.MANAGE_MESSAGES);
+    }
     await messageService.unpinMessage(messageId);
     await dispatchMessage(channelId, "CHANNEL_PINS_UPDATE", { channelId });
     return reply.status(204).send();

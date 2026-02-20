@@ -6,6 +6,8 @@ import * as pollService from "../../services/poll.service.js";
 import * as messageService from "../../services/message.service.js";
 import * as channelService from "../../services/channel.service.js";
 import { ApiError } from "../../services/auth.service.js";
+import * as permissionService from "../../services/permission.service.js";
+import { PermissionFlags } from "@yxc/permissions";
 import { redisPub } from "../../config/redis.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { db, schema } from "../../db/index.js";
@@ -136,6 +138,21 @@ export async function pollRoutes(app: FastifyInstance) {
       channelId: string;
       pollId: string;
     };
+
+    // Verify the user is the poll creator or has MANAGE_MESSAGES
+    const existingPoll = await pollService.getPoll(pollId, request.userId);
+    if (!existingPoll) throw new ApiError(404, "Poll not found");
+
+    const pollMessage = await messageService.getMessageWithAuthor(existingPoll.messageId);
+    const isCreator = pollMessage?.author?.id === request.userId;
+    if (!isCreator) {
+      const channel = await channelService.getChannel(channelId);
+      if (channel?.guildId) {
+        await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.MANAGE_MESSAGES);
+      } else {
+        throw new ApiError(403, "Only the poll creator can end this poll");
+      }
+    }
 
     const poll = await pollService.endPoll(pollId, request.userId);
     if (!poll) throw new ApiError(404, "Poll not found");

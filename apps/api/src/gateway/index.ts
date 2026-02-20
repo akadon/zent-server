@@ -25,7 +25,7 @@ import { db, schema } from "../db/index.js";
 
 const HEARTBEAT_INTERVAL = 41250; // ~41s
 const PRESENCE_TTL = 300; // 5 minutes
-const SESSION_TTL = HEARTBEAT_INTERVAL / 1000 + 30; // heartbeat interval + buffer
+const SESSION_TTL = Math.ceil(HEARTBEAT_INTERVAL / 1000) + 30; // heartbeat interval + buffer
 const RESUME_WINDOW = 300; // 5 minutes
 const RESUME_BUFFER_MAX = 500;
 

@@ -105,12 +105,24 @@ function generateBackupCodes(): string[] {
 }
 
 function hashBackupCode(code: string): string {
-  return crypto.createHash("sha256").update(code).digest("hex");
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.createHash("sha256").update(salt + code).digest("hex");
+  return `${salt}:${hash}`;
+}
+
+function verifyBackupCode(code: string, storedHash: string): boolean {
+  if (storedHash.includes(":")) {
+    const [salt, hash] = storedHash.split(":");
+    const computed = crypto.createHash("sha256").update(salt + code).digest("hex");
+    return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(hash!));
+  }
+  // Legacy unsalted comparison
+  const legacy = crypto.createHash("sha256").update(code).digest("hex");
+  return crypto.timingSafeEqual(Buffer.from(legacy), Buffer.from(storedHash));
 }
 
 const enableSchema = z.object({
   code: z.string().length(6).regex(/^\d+$/),
-  secret: z.string().min(1),
 });
 
 const verifySchema = z.object({
@@ -142,6 +154,12 @@ export async function mfaRoutes(app: FastifyInstance) {
       const issuer = "Zent";
       const uri = `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(user.email)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
 
+      // Store pending secret server-side so /enable doesn't need to trust client
+      await db
+        .update(users)
+        .set({ mfaSecret: secret })
+        .where(eq(users.id, request.userId));
+
       return reply.send({ secret, uri });
     }
   );
@@ -161,8 +179,9 @@ export async function mfaRoutes(app: FastifyInstance) {
 
       if (!user) throw new ApiError(404, "User not found");
       if (user.mfaEnabled) throw new ApiError(400, "MFA is already enabled");
+      if (!user.mfaSecret) throw new ApiError(400, "Call /auth/mfa/setup first");
 
-      const secretBuffer = base32Decode(body.secret);
+      const secretBuffer = base32Decode(user.mfaSecret);
       const valid = verifyTOTP(secretBuffer, body.code);
 
       if (!valid) {
@@ -176,7 +195,6 @@ export async function mfaRoutes(app: FastifyInstance) {
         .update(users)
         .set({
           mfaEnabled: true,
-          mfaSecret: body.secret,
           mfaBackupCodes: hashedBackupCodes,
         })
         .where(eq(users.id, request.userId));
@@ -215,9 +233,8 @@ export async function mfaRoutes(app: FastifyInstance) {
 
       if (!valid) {
         // Check backup codes
-        const codeHash = hashBackupCode(body.code);
         const backupCodes = (user.mfaBackupCodes as string[]) ?? [];
-        const backupIndex = backupCodes.indexOf(codeHash);
+        const backupIndex = backupCodes.findIndex((stored) => verifyBackupCode(body.code, stored));
 
         if (backupIndex === -1) {
           throw new ApiError(400, "Invalid verification code");
