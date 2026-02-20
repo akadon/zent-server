@@ -1,4 +1,4 @@
-import { lte, and, eq, isNotNull, inArray } from "drizzle-orm";
+import { lte, and, eq, isNotNull, inArray, lt } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { redis, redisPub } from "../config/redis.js";
 import * as scheduledMessageService from "../services/scheduled-message.service.js";
@@ -9,6 +9,7 @@ const POD_NAME = process.env.HOSTNAME || "default";
 const LEADER_KEY = "zent:jobs:leader";
 const LEADER_TTL = 30; // seconds
 const LEADER_RENEW_INTERVAL = 10_000; // 10s
+const MAX_RETRY_ATTEMPTS = 3;
 
 let isLeader = false;
 
@@ -60,6 +61,15 @@ async function processScheduledMessages() {
         }
       } catch (err) {
         console.error(`Failed to send scheduled message ${scheduled.id}:`, err);
+        // Track failure attempts via Redis (avoids schema migration)
+        const failKey = `jobs:fail:${scheduled.id}`;
+        const attempts = await redis.incr(failKey);
+        await redis.expire(failKey, 86400); // 24h TTL
+        if (attempts >= MAX_RETRY_ATTEMPTS) {
+          console.error(`Scheduled message ${scheduled.id} failed ${attempts} times, marking as sent to stop retries`);
+          await scheduledMessageService.markAsSent(scheduled.id);
+          await redis.del(failKey);
+        }
       }
     }
   } catch (err) {

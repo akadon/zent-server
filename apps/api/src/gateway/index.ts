@@ -549,6 +549,19 @@ export function createGateway(httpServer: HttpServer) {
 
         // Replay missed events from resume buffer
         const missedEvents = await getResumeEvents(data.sessionId, data.seq);
+
+        // If buffer was truncated and can't satisfy the resume, force re-identify
+        const bufferLength = await redis.llen(`resume:${data.sessionId}`);
+        if (bufferLength >= RESUME_BUFFER_MAX && missedEvents.length > 0) {
+          const firstBuffered = missedEvents[0]!.s ?? 0;
+          if (firstBuffered > data.seq + 1) {
+            // Gap in sequence — events were lost
+            socket.emit("message", { op: GatewayOp.INVALID_SESSION, d: true });
+            await clearResumeBuffer(data.sessionId);
+            return;
+          }
+        }
+
         for (const event of missedEvents) {
           socket.emit("message", event);
         }
