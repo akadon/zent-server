@@ -404,6 +404,7 @@ export async function messageRoutes(app: FastifyInstance) {
 
   app.delete(
     "/channels/:channelId/messages/:messageId/reactions/:emoji/@me",
+    { preHandler: [createRateLimiter("reaction")] },
     async (request, reply) => {
       const { channelId, messageId, emoji } = request.params as {
         channelId: string;

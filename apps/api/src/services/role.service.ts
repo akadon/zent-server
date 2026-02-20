@@ -1,4 +1,4 @@
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
@@ -110,7 +110,7 @@ export async function addRoleToMember(
   await db
     .insert(schema.memberRoles)
     .values({ userId, guildId, roleId })
-    .onDuplicateKeyUpdate({ set: { userId: sql`user_id` } });
+    .onConflictDoNothing();
 
   await invalidatePermissions(userId, guildId);
 }

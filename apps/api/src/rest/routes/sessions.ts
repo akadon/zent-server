@@ -4,6 +4,7 @@ import { authMiddleware } from "../../middleware/auth.js";
 import { db, schema } from "../../db/index.js";
 import { eq, and, ne } from "drizzle-orm";
 import { ApiError } from "../../services/auth.service.js";
+import { redisPub } from "../../config/redis.js";
 
 export async function sessionRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authMiddleware);
@@ -97,6 +98,12 @@ export async function sessionRoutes(app: FastifyInstance) {
         )
       );
 
+    // Immediately invalidate gateway session via Redis pub/sub
+    await redisPub.publish(
+      `gateway:user:${request.userId}`,
+      JSON.stringify({ event: "SESSION_INVALIDATE", data: {} })
+    );
+
     return reply.status(204).send();
   });
 
@@ -124,6 +131,15 @@ export async function sessionRoutes(app: FastifyInstance) {
         .delete(schema.userSessions)
         .where(eq(schema.userSessions.userId, request.userId));
     }
+
+    // Immediately invalidate gateway sessions via Redis pub/sub
+    await redisPub.publish(
+      `gateway:user:${request.userId}`,
+      JSON.stringify({
+        event: "SESSION_INVALIDATE",
+        data: { exceptSocketId: body.exceptCurrent ? currentSessionId : null },
+      })
+    );
 
     return reply.status(204).send();
   });

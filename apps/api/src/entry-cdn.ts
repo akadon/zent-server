@@ -12,7 +12,7 @@ const app = Fastify({
   logger: { level: "info" },
 });
 
-await app.register(cors, { origin: true, credentials: true });
+await app.register(cors, { origin: true, credentials: true, maxAge: 86400 });
 await app.register(multipart, {
   limits: { fileSize: 50 * 1024 * 1024, files: 10 },
 });

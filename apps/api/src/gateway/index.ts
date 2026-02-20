@@ -20,7 +20,7 @@ import type {
 } from "@yxc/gateway-types";
 import { GatewayIntentBits } from "@yxc/gateway-types";
 import crypto from "crypto";
-import { eq, and, inArray, or, like, sql } from "drizzle-orm";
+import { eq, and, inArray, or, ilike, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 
 const HEARTBEAT_INTERVAL = 41250; // ~41s
@@ -283,6 +283,27 @@ export function createGateway(httpServer: HttpServer) {
         }
       } else if (channel.startsWith("gateway:user:")) {
         const userId = channel.replace("gateway:user:", "");
+
+        // Handle session invalidation: disconnect sockets immediately
+        if (parsed.event === "SESSION_INVALIDATE") {
+          const invalidateData = parsed.data as { exceptSocketId?: string | null };
+          const socketsToDisconnect = await io.in(`user:${userId}`).fetchSockets();
+          for (const remoteSocket of socketsToDisconnect) {
+            const socketSession = localSessions.get(remoteSocket.id);
+            if (invalidateData.exceptSocketId && socketSession?.sessionId === invalidateData.exceptSocketId) {
+              continue;
+            }
+            if (socketSession) {
+              if (socketSession.heartbeatTimer) clearTimeout(socketSession.heartbeatTimer);
+              await removeSession(remoteSocket.id);
+              await clearResumeBuffer(socketSession.sessionId);
+            }
+            remoteSocket.emit("message", { op: GatewayOp.INVALID_SESSION, d: false });
+            remoteSocket.disconnect(true);
+          }
+          return;
+        }
+
         const socketsInUserRoom = await io.in(`user:${userId}`).fetchSockets();
         for (const remoteSocket of socketsInUserRoom) {
           const socketSession = localSessions.get(remoteSocket.id);
@@ -760,8 +781,8 @@ export function createGateway(httpServer: HttpServer) {
               data.query === ""
                 ? undefined
                 : or(
-                    like(schema.users.username, queryPattern),
-                    like(schema.members.nickname, queryPattern)
+                    ilike(schema.users.username, queryPattern),
+                    ilike(schema.members.nickname, queryPattern)
                   )
             )
           )
@@ -878,7 +899,8 @@ async function setPresence(
         activities: activities as any,
         updatedAt: new Date(),
       })
-      .onDuplicateKeyUpdate({
+      .onConflictDoUpdate({
+        target: [schema.userActivities.userId],
         set: {
           activities: activities as any,
           updatedAt: new Date(),

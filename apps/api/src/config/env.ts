@@ -4,7 +4,7 @@ import { z } from "zod";
 const envSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().default("redis://localhost:6379"),
-  AUTH_SECRET: z.string().min(16),
+  AUTH_SECRET: z.string().min(32),
   API_PORT: z.coerce.number().default(4000),
   API_HOST: z.string().default("0.0.0.0"),
 

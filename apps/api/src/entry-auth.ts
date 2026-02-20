@@ -18,7 +18,7 @@ const app = Fastify({
   logger: { level: "info" },
 });
 
-await app.register(cors, { origin: true, credentials: true });
+await app.register(cors, { origin: true, credentials: true, maxAge: 86400 });
 await app.register(cookie);
 
 app.addHook("preHandler", globalRateLimit);

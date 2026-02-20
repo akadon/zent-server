@@ -317,16 +317,10 @@ export async function getChannelMessages(
     attachmentsByMessage.set(att.messageId, list);
   }
 
-  // Fetch poll details for messages that have polls
-  const pollsByMessage = new Map<string, Record<string, any>>();
-  if (allPolls.length > 0) {
-    const pollDetails = await Promise.all(
-      allPolls.map((p) => pollService.getPoll(p.id, currentUserId))
-    );
-    for (const detail of pollDetails) {
-      if (detail) pollsByMessage.set(detail.messageId, detail);
-    }
-  }
+  // Batch fetch poll details (options + votes in 2 queries instead of N)
+  const pollsByMessage = allPolls.length > 0
+    ? await pollService.getBatchPolls(allPolls, currentUserId)
+    : new Map<string, Record<string, any>>();
 
   // Batch fetch referenced messages (one level only)
   const refIds = rows
@@ -527,15 +521,10 @@ export async function getPinnedMessages(channelId: string, currentUserId?: strin
     attachmentsByMessage.set(att.messageId, list);
   }
 
-  const pollsByMessage = new Map<string, Record<string, any>>();
-  if (allPolls.length > 0) {
-    const pollDetails = await Promise.all(
-      allPolls.map((p) => pollService.getPoll(p.id, currentUserId))
-    );
-    for (const detail of pollDetails) {
-      if (detail) pollsByMessage.set(detail.messageId, detail);
-    }
-  }
+  // Batch fetch poll details (options + votes in 2 queries instead of N)
+  const pollsByMessage = allPolls.length > 0
+    ? await pollService.getBatchPolls(allPolls, currentUserId)
+    : new Map<string, Record<string, any>>();
 
   // Batch fetch referenced messages (one level only)
   const refIds = rows

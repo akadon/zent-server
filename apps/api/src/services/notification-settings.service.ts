@@ -48,7 +48,14 @@ export async function upsertSettings(
   await db
     .insert(schema.notificationSettings)
     .values(values)
-    .onDuplicateKeyUpdate({ set: setClause });
+    .onConflictDoUpdate({
+      target: [
+        schema.notificationSettings.userId,
+        schema.notificationSettings.guildId,
+        schema.notificationSettings.channelId,
+      ],
+      set: setClause,
+    });
 
   const [result] = await db
     .select()

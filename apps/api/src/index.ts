@@ -63,6 +63,7 @@ const app = Fastify({
 await app.register(cors, {
   origin: env.CORS_ORIGIN.split(","),
   credentials: true,
+  maxAge: 86400,
 });
 
 // Cookies

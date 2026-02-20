@@ -1,4 +1,4 @@
-import { eq, and, sql, isNull } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { ApiError } from "./auth.service.js";
 
@@ -17,15 +17,16 @@ export async function addReaction(
 
   if (!message) throw new ApiError(404, "Message not found");
 
+  // Use "" for unicode emoji (no custom ID) — keeps composite PK valid in PostgreSQL
   await db
     .insert(schema.messageReactions)
     .values({
       messageId,
       userId,
       emojiName,
-      emojiId: emojiId ?? null,
+      emojiId: emojiId ?? "",
     })
-    .onDuplicateKeyUpdate({ set: { messageId: sql`message_id` } });
+    .onConflictDoNothing();
 
   return { messageId, channelId: message.channelId, emojiName, emojiId: emojiId ?? null };
 }
@@ -36,19 +37,14 @@ export async function removeReaction(
   emojiName: string,
   emojiId?: string
 ) {
-  const conditions = [
-    eq(schema.messageReactions.messageId, messageId),
-    eq(schema.messageReactions.userId, userId),
-    eq(schema.messageReactions.emojiName, emojiName),
-  ];
-
-  if (emojiId) {
-    conditions.push(eq(schema.messageReactions.emojiId, emojiId));
-  } else {
-    conditions.push(isNull(schema.messageReactions.emojiId));
-  }
-
-  await db.delete(schema.messageReactions).where(and(...conditions));
+  await db.delete(schema.messageReactions).where(
+    and(
+      eq(schema.messageReactions.messageId, messageId),
+      eq(schema.messageReactions.userId, userId),
+      eq(schema.messageReactions.emojiName, emojiName),
+      eq(schema.messageReactions.emojiId, emojiId ?? "")
+    )
+  );
 }
 
 export async function getReactions(
@@ -56,37 +52,29 @@ export async function getReactions(
   emojiName: string,
   emojiId?: string
 ) {
-  const conditions = [
-    eq(schema.messageReactions.messageId, messageId),
-    eq(schema.messageReactions.emojiName, emojiName),
-  ];
-
-  if (emojiId) {
-    conditions.push(eq(schema.messageReactions.emojiId, emojiId));
-  }
-
   const reactions = await db
-    .select({
-      userId: schema.messageReactions.userId,
-    })
+    .select({ userId: schema.messageReactions.userId })
     .from(schema.messageReactions)
-    .where(and(...conditions));
+    .where(
+      and(
+        eq(schema.messageReactions.messageId, messageId),
+        eq(schema.messageReactions.emojiName, emojiName),
+        eq(schema.messageReactions.emojiId, emojiId ?? "")
+      )
+    );
 
-  // Fetch user data
-  const users = [];
-  for (const r of reactions) {
-    const [user] = await db
-      .select({
-        id: schema.users.id,
-        username: schema.users.username,
-        displayName: schema.users.displayName,
-        avatar: schema.users.avatar,
-      })
-      .from(schema.users)
-      .where(eq(schema.users.id, r.userId))
-      .limit(1);
-    if (user) users.push(user);
-  }
+  if (reactions.length === 0) return [];
+
+  // Batch fetch all reacting users in one query
+  const users = await db
+    .select({
+      id: schema.users.id,
+      username: schema.users.username,
+      displayName: schema.users.displayName,
+      avatar: schema.users.avatar,
+    })
+    .from(schema.users)
+    .where(inArray(schema.users.id, reactions.map((r) => r.userId)));
 
   return users;
 }
