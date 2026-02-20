@@ -1,4 +1,4 @@
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
@@ -89,6 +89,64 @@ export async function getPollByMessageId(messageId: string, userId?: string) {
 
   if (!poll) return null;
   return getPoll(poll.id, userId);
+}
+
+export async function getBatchPolls(
+  polls: { id: string; channelId: string; messageId: string; question: string; allowMultiselect: boolean; anonymous: boolean; expiresAt: Date | null; createdAt: Date }[],
+  userId?: string
+): Promise<Map<string, Record<string, any>>> {
+  const result = new Map<string, Record<string, any>>();
+  if (polls.length === 0) return result;
+
+  const pollIds = polls.map((p) => p.id);
+
+  const [allOptions, allVotes] = await Promise.all([
+    db.select().from(schema.pollOptions).where(inArray(schema.pollOptions.pollId, pollIds)),
+    db.select().from(schema.pollVotes).where(inArray(schema.pollVotes.pollId, pollIds)),
+  ]);
+
+  const optionsByPoll = new Map<string, typeof allOptions>();
+  for (const opt of allOptions) {
+    const list = optionsByPoll.get(opt.pollId) ?? [];
+    list.push(opt);
+    optionsByPoll.set(opt.pollId, list);
+  }
+
+  const votesByPoll = new Map<string, typeof allVotes>();
+  for (const vote of allVotes) {
+    const list = votesByPoll.get(vote.pollId) ?? [];
+    list.push(vote);
+    votesByPoll.set(vote.pollId, list);
+  }
+
+  for (const poll of polls) {
+    const options = optionsByPoll.get(poll.id) ?? [];
+    const votes = votesByPoll.get(poll.id) ?? [];
+    const totalVotes = new Set(votes.map((v) => v.userId)).size;
+
+    result.set(poll.messageId, {
+      id: poll.id,
+      channelId: poll.channelId,
+      messageId: poll.messageId,
+      question: poll.question,
+      allowMultiselect: poll.allowMultiselect,
+      anonymous: poll.anonymous,
+      expiresAt: poll.expiresAt?.toISOString() ?? null,
+      totalVotes,
+      createdAt: poll.createdAt.toISOString(),
+      options: options
+        .sort((a, b) => a.position - b.position)
+        .map((opt) => ({
+          id: opt.id,
+          text: opt.text,
+          position: opt.position,
+          votes: votes.filter((v) => v.optionId === opt.id).length,
+          voted: userId ? votes.some((v) => v.optionId === opt.id && v.userId === userId) : false,
+        })),
+    });
+  }
+
+  return result;
 }
 
 export async function votePoll(pollId: string, optionId: string, userId: string) {

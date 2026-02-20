@@ -1,4 +1,4 @@
-import { lte, and, eq, isNotNull } from "drizzle-orm";
+import { lte, and, eq, isNotNull, inArray } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { redis, redisPub } from "../config/redis.js";
 import * as scheduledMessageService from "../services/scheduled-message.service.js";
@@ -82,13 +82,27 @@ async function cleanupExpiredMessages() {
       )
       .limit(100);
 
-    for (const msg of expired) {
-      await db.delete(schema.messages).where(eq(schema.messages.id, msg.id));
+    if (expired.length === 0) return;
 
-      const channel = await channelService.getChannel(msg.channelId);
-      if (channel?.guildId) {
-        const guildId = channel.guildId;
-        await redisPub.publish(
+    // Batch delete all expired messages in one query
+    await db
+      .delete(schema.messages)
+      .where(inArray(schema.messages.id, expired.map((m) => m.id)));
+
+    // Batch fetch unique channels to avoid N+1 queries
+    const uniqueChannelIds = [...new Set(expired.map((m) => m.channelId))];
+    const channels = await db
+      .select({ id: schema.channels.id, guildId: schema.channels.guildId })
+      .from(schema.channels)
+      .where(inArray(schema.channels.id, uniqueChannelIds));
+    const channelMap = new Map(channels.map((c) => [c.id, c.guildId]));
+
+    // Pipeline all gateway dispatches
+    const pipeline = redisPub.pipeline();
+    for (const msg of expired) {
+      const guildId = channelMap.get(msg.channelId);
+      if (guildId) {
+        pipeline.publish(
           `gateway:guild:${guildId}`,
           JSON.stringify({
             event: "MESSAGE_DELETE",
@@ -97,6 +111,7 @@ async function cleanupExpiredMessages() {
         );
       }
     }
+    await pipeline.exec();
   } catch (err) {
     console.error("Error cleaning up expired messages:", err);
   }
@@ -107,13 +122,13 @@ export function startBackgroundJobs() {
 
   // Leader election loop - try to acquire/renew every 10s
   const leaderLoop = async () => {
+    const wasLeader = isLeader;
     const acquired = await tryAcquireLeadership();
-    if (acquired && !isLeader) {
+    if (acquired && !wasLeader) {
       console.log(`[${POD_NAME}] Became leader for background jobs`);
-    } else if (!acquired && isLeader) {
+    } else if (!acquired && wasLeader) {
       console.log(`[${POD_NAME}] Lost leadership`);
     }
-    isLeader = acquired;
   };
 
   // Start leader election immediately, then every 10s

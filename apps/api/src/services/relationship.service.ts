@@ -81,14 +81,16 @@ export async function sendFriendRequest(userId: string, targetId: string) {
     await tx
       .insert(schema.relationships)
       .values({ userId, targetId, type: 4 })
-      .onDuplicateKeyUpdate({
+      .onConflictDoUpdate({
+        target: [schema.relationships.userId, schema.relationships.targetId],
         set: { type: 4 },
       });
 
     await tx
       .insert(schema.relationships)
       .values({ userId: targetId, targetId: userId, type: 3 })
-      .onDuplicateKeyUpdate({
+      .onConflictDoUpdate({
+        target: [schema.relationships.userId, schema.relationships.targetId],
         set: { type: 3 },
       });
   });
@@ -172,7 +174,8 @@ export async function blockUser(userId: string, targetId: string) {
     await tx
       .insert(schema.relationships)
       .values({ userId, targetId, type: 2 })
-      .onDuplicateKeyUpdate({
+      .onConflictDoUpdate({
+        target: [schema.relationships.userId, schema.relationships.targetId],
         set: { type: 2 },
       });
   });

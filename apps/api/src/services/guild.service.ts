@@ -12,7 +12,10 @@ async function fetchVoiceStates(guildId: string): Promise<any[]> {
   try {
     const headers: Record<string, string> = {};
     if (env.VOICE_INTERNAL_KEY) headers["x-internal-key"] = env.VOICE_INTERNAL_KEY;
-    const res = await fetch(`${env.VOICE_SERVICE_URL}/api/voice/${guildId}/states`, { headers });
+    const res = await fetch(`${env.VOICE_SERVICE_URL}/api/voice/${guildId}/states`, {
+      headers,
+      signal: AbortSignal.timeout(3000),
+    });
     if (!res.ok) return [];
     return (await res.json()) as any[];
   } catch {
