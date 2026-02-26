@@ -1,52 +1,44 @@
 import {
-  pgTable,
-  pgEnum,
+  mysqlTable,
+  mysqlEnum,
   varchar,
   text,
-  integer,
+  int,
   bigint,
   boolean,
-  timestamp,
-  jsonb,
+  datetime,
+  json,
   primaryKey,
   index,
   uniqueIndex,
   serial,
   unique,
-} from "drizzle-orm/pg-core";
+} from "drizzle-orm/mysql-core";
 import { sql } from "drizzle-orm";
 
-// ── Enum Types ──
-export const userStatusEnum = pgEnum("user_status", ["online", "idle", "dnd", "offline"]);
-export const banAppealStatusEnum = pgEnum("ban_appeal_status", ["pending", "accepted", "rejected"]);
-export const moderationQueueStatusEnum = pgEnum("moderation_queue_status", ["pending", "approved", "rejected", "escalated"]);
-export const notificationLevelEnum = pgEnum("notification_level", ["all", "mentions", "none"]);
-export const verificationCodeTypeEnum = pgEnum("verification_code_type", ["email", "phone", "password_reset"]);
-export const guildEventUserStatusEnum = pgEnum("guild_event_user_status", ["interested", "going", "not_going"]);
-
 // ── Users ──
-export const users = pgTable(
+export const users = mysqlTable(
   "users",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     username: varchar("username", { length: 255 }).notNull(),
-    displayName: text("display_name"),
+    displayName: varchar("display_name", { length: 255 }),
     email: varchar("email", { length: 255 }).notNull(),
-    passwordHash: text("password_hash").notNull(),
-    avatar: text("avatar"),
-    banner: text("banner"),
-    bio: text("bio"),
-    status: userStatusEnum("status").notNull().default("offline"),
-    customStatus: jsonb("custom_status").$type<{ text?: string; emoji?: string } | null>(),
+    passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+    avatar: varchar("avatar", { length: 255 }),
+    banner: varchar("banner", { length: 255 }),
+    bio: varchar("bio", { length: 255 }),
+    status: mysqlEnum("status", ["online", "idle", "dnd", "offline"]).notNull().default("offline"),
+    customStatus: json("custom_status").$type<{ text?: string; emoji?: string } | null>(),
     mfaEnabled: boolean("mfa_enabled").notNull().default(false),
-    mfaSecret: text("mfa_secret"),
-    mfaBackupCodes: jsonb("mfa_backup_codes").$type<string[]>(),
+    mfaSecret: varchar("mfa_secret", { length: 255 }),
+    mfaBackupCodes: json("mfa_backup_codes").$type<string[]>(),
     verified: boolean("verified").notNull().default(false),
-    flags: integer("flags").notNull().default(0),
-    premiumType: integer("premium_type").notNull().default(0),
+    flags: int("flags").notNull().default(0),
+    premiumType: int("premium_type").notNull().default(0),
     locale: varchar("locale", { length: 10 }).notNull().default("en-US"),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
-    updatedAt: timestamp("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    updatedAt: datetime("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     uniqueIndex("users_email_idx").on(table.email),
@@ -55,30 +47,30 @@ export const users = pgTable(
 );
 
 // ── Guilds ──
-export const guilds = pgTable(
+export const guilds = mysqlTable(
   "guilds",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
-    name: text("name").notNull(),
-    icon: text("icon"),
-    banner: text("banner"),
-    splash: text("splash"),
+    name: varchar("name", { length: 255 }).notNull(),
+    icon: varchar("icon", { length: 255 }),
+    banner: varchar("banner", { length: 255 }),
+    splash: varchar("splash", { length: 255 }),
     ownerId: varchar("owner_id", { length: 64 })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     description: text("description"),
-    verificationLevel: integer("verification_level").notNull().default(0),
-    defaultMessageNotifications: integer("default_message_notifications").notNull().default(0),
-    explicitContentFilter: integer("explicit_content_filter").notNull().default(0),
-    features: jsonb("features").$type<string[]>().notNull().default([]),
+    verificationLevel: int("verification_level").notNull().default(0),
+    defaultMessageNotifications: int("default_message_notifications").notNull().default(0),
+    explicitContentFilter: int("explicit_content_filter").notNull().default(0),
+    features: json("features").$type<string[]>().notNull().default([]),
     systemChannelId: varchar("system_channel_id", { length: 64 }),
     rulesChannelId: varchar("rules_channel_id", { length: 64 }),
-    vanityUrlCode: text("vanity_url_code"),
-    premiumTier: integer("premium_tier").notNull().default(0),
-    premiumSubscriptionCount: integer("premium_subscription_count").notNull().default(0),
+    vanityUrlCode: varchar("vanity_url_code", { length: 255 }),
+    premiumTier: int("premium_tier").notNull().default(0),
+    premiumSubscriptionCount: int("premium_subscription_count").notNull().default(0),
     preferredLocale: varchar("preferred_locale", { length: 10 }).notNull().default("en-US"),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
-    updatedAt: timestamp("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    updatedAt: datetime("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("guilds_owner_id_idx").on(table.ownerId),
@@ -86,25 +78,25 @@ export const guilds = pgTable(
 );
 
 // ── Channels ──
-export const channels = pgTable(
+export const channels = mysqlTable(
   "channels",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     guildId: varchar("guild_id", { length: 64 }).references(() => guilds.id, { onDelete: "cascade" }),
-    type: integer("type").notNull().default(0),
-    name: text("name"),
+    type: int("type").notNull().default(0),
+    name: varchar("name", { length: 255 }),
     topic: text("topic"),
-    position: integer("position").notNull().default(0),
+    position: int("position").notNull().default(0),
     parentId: varchar("parent_id", { length: 64 }),
     nsfw: boolean("nsfw").notNull().default(false),
-    rateLimitPerUser: integer("rate_limit_per_user").notNull().default(0),
-    bitrate: integer("bitrate"),
-    userLimit: integer("user_limit"),
+    rateLimitPerUser: int("rate_limit_per_user").notNull().default(0),
+    bitrate: int("bitrate"),
+    userLimit: int("user_limit"),
     lastMessageId: varchar("last_message_id", { length: 64 }),
     ownerId: varchar("owner_id", { length: 64 }),
-    flags: integer("flags").notNull().default(0),
-    messageRetentionSeconds: integer("message_retention_seconds"),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    flags: int("flags").notNull().default(0),
+    messageRetentionSeconds: int("message_retention_seconds"),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("channels_guild_id_idx").on(table.guildId),
@@ -113,7 +105,7 @@ export const channels = pgTable(
 );
 
 // ── Messages ──
-export const messages = pgTable(
+export const messages = mysqlTable(
   "messages",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -124,19 +116,19 @@ export const messages = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     content: text("content").notNull().default(""),
-    type: integer("type").notNull().default(0),
-    flags: integer("flags").notNull().default(0),
+    type: int("type").notNull().default(0),
+    flags: int("flags").notNull().default(0),
     tts: boolean("tts").notNull().default(false),
     mentionEveryone: boolean("mention_everyone").notNull().default(false),
     pinned: boolean("pinned").notNull().default(false),
-    editedTimestamp: timestamp("edited_timestamp", { mode: "date" }),
+    editedTimestamp: datetime("edited_timestamp", { mode: "date" }),
     referencedMessageId: varchar("referenced_message_id", { length: 64 }),
     webhookId: varchar("webhook_id", { length: 64 }),
-    nonce: text("nonce"),
+    nonce: varchar("nonce", { length: 255 }),
     // Denormalized author snapshot for NoSQL-ready reads (no JOIN needed)
-    authorSnapshot: jsonb("author_snapshot").$type<{ id: string; username: string; displayName: string | null; avatar: string | null }>(),
-    expiresAt: timestamp("expires_at", { mode: "date" }),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    authorSnapshot: json("author_snapshot").$type<{ id: string; username: string; displayName: string | null; avatar: string | null }>(),
+    expiresAt: datetime("expires_at", { mode: "date" }),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("messages_channel_id_idx").on(table.channelId),
@@ -150,7 +142,7 @@ export const messages = pgTable(
 );
 
 // ── Roles ──
-export const roles = pgTable(
+export const roles = mysqlTable(
   "roles",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -158,20 +150,20 @@ export const roles = pgTable(
       .notNull()
       .references(() => guilds.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
-    color: integer("color").notNull().default(0),
+    color: int("color").notNull().default(0),
     hoist: boolean("hoist").notNull().default(false),
-    icon: text("icon"),
-    position: integer("position").notNull().default(0),
+    icon: varchar("icon", { length: 255 }),
+    position: int("position").notNull().default(0),
     permissions: varchar("permissions", { length: 64 }).notNull().default("0"),
     managed: boolean("managed").notNull().default(false),
     mentionable: boolean("mentionable").notNull().default(false),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [index("roles_guild_id_idx").on(table.guildId)]
 );
 
 // ── Members ──
-export const members = pgTable(
+export const members = mysqlTable(
   "members",
   {
     userId: varchar("user_id", { length: 64 })
@@ -180,14 +172,14 @@ export const members = pgTable(
     guildId: varchar("guild_id", { length: 64 })
       .notNull()
       .references(() => guilds.id, { onDelete: "cascade" }),
-    nickname: text("nickname"),
-    avatar: text("avatar"),
-    joinedAt: timestamp("joined_at", { mode: "date" }).notNull().default(sql`NOW()`),
-    premiumSince: timestamp("premium_since", { mode: "date" }),
+    nickname: varchar("nickname", { length: 255 }),
+    avatar: varchar("avatar", { length: 255 }),
+    joinedAt: datetime("joined_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    premiumSince: datetime("premium_since", { mode: "date" }),
     deaf: boolean("deaf").notNull().default(false),
     mute: boolean("mute").notNull().default(false),
     pending: boolean("pending").notNull().default(false),
-    communicationDisabledUntil: timestamp("communication_disabled_until", { mode: "date" }),
+    communicationDisabledUntil: datetime("communication_disabled_until", { mode: "date" }),
   },
   (table) => [
     primaryKey({ columns: [table.userId, table.guildId] }),
@@ -197,7 +189,7 @@ export const members = pgTable(
 );
 
 // ── Member Roles ──
-export const memberRoles = pgTable(
+export const memberRoles = mysqlTable(
   "member_roles",
   {
     userId: varchar("user_id", { length: 64 })
@@ -218,14 +210,14 @@ export const memberRoles = pgTable(
 );
 
 // ── Permission Overwrites ──
-export const permissionOverwrites = pgTable(
+export const permissionOverwrites = mysqlTable(
   "permission_overwrites",
   {
     channelId: varchar("channel_id", { length: 64 })
       .notNull()
       .references(() => channels.id, { onDelete: "cascade" }),
     targetId: varchar("target_id", { length: 64 }).notNull(),
-    targetType: integer("target_type").notNull(),
+    targetType: int("target_type").notNull(),
     allow: varchar("allow", { length: 64 }).notNull().default("0"),
     deny: varchar("deny", { length: 64 }).notNull().default("0"),
   },
@@ -236,7 +228,7 @@ export const permissionOverwrites = pgTable(
 );
 
 // ── Relationships (friends, blocks) ──
-export const relationships = pgTable(
+export const relationships = mysqlTable(
   "relationships",
   {
     userId: varchar("user_id", { length: 64 })
@@ -245,8 +237,8 @@ export const relationships = pgTable(
     targetId: varchar("target_id", { length: 64 })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    type: integer("type").notNull(),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    type: int("type").notNull(),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     primaryKey({ columns: [table.userId, table.targetId] }),
@@ -256,7 +248,7 @@ export const relationships = pgTable(
 );
 
 // ── DM Channels ──
-export const dmChannels = pgTable(
+export const dmChannels = mysqlTable(
   "dm_channels",
   {
     channelId: varchar("channel_id", { length: 64 })
@@ -273,7 +265,7 @@ export const dmChannels = pgTable(
 );
 
 // ── Invites ──
-export const invites = pgTable(
+export const invites = mysqlTable(
   "invites",
   {
     code: varchar("code", { length: 64 }).primaryKey(),
@@ -284,12 +276,12 @@ export const invites = pgTable(
       .notNull()
       .references(() => channels.id, { onDelete: "cascade" }),
     inviterId: varchar("inviter_id", { length: 64 }).references(() => users.id, { onDelete: "cascade" }),
-    maxUses: integer("max_uses").notNull().default(0),
-    uses: integer("uses").notNull().default(0),
-    maxAge: integer("max_age").notNull().default(86400),
+    maxUses: int("max_uses").notNull().default(0),
+    uses: int("uses").notNull().default(0),
+    maxAge: int("max_age").notNull().default(86400),
     temporary: boolean("temporary").notNull().default(false),
-    expiresAt: timestamp("expires_at", { mode: "date" }),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    expiresAt: datetime("expires_at", { mode: "date" }),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("invites_guild_id_idx").on(table.guildId),
@@ -298,7 +290,7 @@ export const invites = pgTable(
 );
 
 // ── Bans ──
-export const bans = pgTable(
+export const bans = mysqlTable(
   "bans",
   {
     guildId: varchar("guild_id", { length: 64 })
@@ -309,7 +301,7 @@ export const bans = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     reason: text("reason"),
     bannedBy: varchar("banned_by", { length: 64 }).references(() => users.id, { onDelete: "cascade" }),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     primaryKey({ columns: [table.guildId, table.userId] }),
@@ -318,26 +310,26 @@ export const bans = pgTable(
 );
 
 // ── Message Attachments ──
-export const messageAttachments = pgTable(
+export const messageAttachments = mysqlTable(
   "message_attachments",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     messageId: varchar("message_id", { length: 64 })
       .notNull()
       .references(() => messages.id, { onDelete: "cascade" }),
-    filename: text("filename").notNull(),
-    size: integer("size").notNull(),
-    url: text("url").notNull(),
-    proxyUrl: text("proxy_url").notNull(),
-    contentType: text("content_type"),
-    width: integer("width"),
-    height: integer("height"),
+    filename: varchar("filename", { length: 255 }).notNull(),
+    size: int("size").notNull(),
+    url: varchar("url", { length: 2048 }).notNull(),
+    proxyUrl: varchar("proxy_url", { length: 2048 }).notNull(),
+    contentType: varchar("content_type", { length: 255 }),
+    width: int("width"),
+    height: int("height"),
   },
   (table) => [index("attachments_message_id_idx").on(table.messageId)]
 );
 
 // ── Message Embeds ──
-export const messageEmbeds = pgTable(
+export const messageEmbeds = mysqlTable(
   "message_embeds",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -347,20 +339,20 @@ export const messageEmbeds = pgTable(
     type: varchar("type", { length: 32 }).notNull().default("rich"),
     title: text("title"),
     description: text("description"),
-    url: text("url"),
-    color: integer("color"),
-    footer: jsonb("footer"),
-    image: jsonb("image"),
-    thumbnail: jsonb("thumbnail"),
-    author: jsonb("author"),
-    fields: jsonb("fields"),
+    url: varchar("url", { length: 2048 }),
+    color: int("color"),
+    footer: json("footer"),
+    image: json("image"),
+    thumbnail: json("thumbnail"),
+    author: json("author"),
+    fields: json("fields"),
   },
   (table) => [index("embeds_message_id_idx").on(table.messageId)]
 );
 
 // ── Message Reactions ──
-// emojiId uses "" for unicode emoji (no custom ID) so the composite PK works in PostgreSQL
-export const messageReactions = pgTable(
+// emojiId uses "" for unicode emoji (no custom ID) so the composite PK works in MySQL
+export const messageReactions = mysqlTable(
   "message_reactions",
   {
     messageId: varchar("message_id", { length: 64 })
@@ -383,7 +375,7 @@ export const messageReactions = pgTable(
 );
 
 // ── Custom Emojis ──
-export const emojis = pgTable(
+export const emojis = mysqlTable(
   "emojis",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -402,7 +394,7 @@ export const emojis = pgTable(
 );
 
 // ── Webhooks ──
-export const webhooks = pgTable(
+export const webhooks = mysqlTable(
   "webhooks",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -412,10 +404,11 @@ export const webhooks = pgTable(
     channelId: varchar("channel_id", { length: 64 })
       .notNull()
       .references(() => channels.id, { onDelete: "cascade" }),
-    type: integer("type").notNull().default(1),
-    name: text("name"),
-    avatar: text("avatar"),
-    token: text("token"),
+    type: int("type").notNull().default(1),
+    name: varchar("name", { length: 255 }),
+    avatar: varchar("avatar", { length: 255 }),
+    token: varchar("token", { length: 255 }),
+    url: varchar("url", { length: 2048 }),
     creatorId: varchar("creator_id", { length: 64 }).references(() => users.id, { onDelete: "cascade" }),
   },
   (table) => [
@@ -426,7 +419,7 @@ export const webhooks = pgTable(
 );
 
 // ── Read States ──
-export const readStates = pgTable(
+export const readStates = mysqlTable(
   "read_states",
   {
     userId: varchar("user_id", { length: 64 })
@@ -436,7 +429,7 @@ export const readStates = pgTable(
       .notNull()
       .references(() => channels.id, { onDelete: "cascade" }),
     lastMessageId: varchar("last_message_id", { length: 64 }),
-    mentionCount: integer("mention_count").notNull().default(0),
+    mentionCount: int("mention_count").notNull().default(0),
   },
   (table) => [
     primaryKey({ columns: [table.userId, table.channelId] }),
@@ -445,7 +438,7 @@ export const readStates = pgTable(
 );
 
 // ── Audit Log ──
-export const auditLogEntries = pgTable(
+export const auditLogEntries = mysqlTable(
   "audit_log_entries",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -454,10 +447,10 @@ export const auditLogEntries = pgTable(
       .references(() => guilds.id, { onDelete: "cascade" }),
     userId: varchar("user_id", { length: 64 }).references(() => users.id, { onDelete: "cascade" }),
     targetId: varchar("target_id", { length: 64 }),
-    actionType: integer("action_type").notNull(),
+    actionType: int("action_type").notNull(),
     reason: text("reason"),
-    changes: jsonb("changes"),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    changes: json("changes"),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("audit_log_guild_id_idx").on(table.guildId),
@@ -467,7 +460,7 @@ export const auditLogEntries = pgTable(
 );
 
 // ── Polls ──
-export const polls = pgTable(
+export const polls = mysqlTable(
   "polls",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -480,13 +473,13 @@ export const polls = pgTable(
     question: text("question").notNull(),
     allowMultiselect: boolean("allow_multiselect").notNull().default(false),
     anonymous: boolean("anonymous").notNull().default(false),
-    expiresAt: timestamp("expires_at", { mode: "date" }),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    expiresAt: datetime("expires_at", { mode: "date" }),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [index("polls_message_id_idx").on(table.messageId)]
 );
 
-export const pollOptions = pgTable(
+export const pollOptions = mysqlTable(
   "poll_options",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -494,12 +487,12 @@ export const pollOptions = pgTable(
       .notNull()
       .references(() => polls.id, { onDelete: "cascade" }),
     text: text("text").notNull(),
-    position: integer("position").notNull().default(0),
+    position: int("position").notNull().default(0),
   },
   (table) => [index("poll_options_poll_id_idx").on(table.pollId)]
 );
 
-export const pollVotes = pgTable(
+export const pollVotes = mysqlTable(
   "poll_votes",
   {
     pollId: varchar("poll_id", { length: 64 })
@@ -519,7 +512,7 @@ export const pollVotes = pgTable(
 );
 
 // ── Scheduled Messages ──
-export const scheduledMessages = pgTable(
+export const scheduledMessages = mysqlTable(
   "scheduled_messages",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -530,9 +523,9 @@ export const scheduledMessages = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     content: text("content").notNull(),
-    scheduledFor: timestamp("scheduled_for", { mode: "date" }).notNull(),
+    scheduledFor: datetime("scheduled_for", { mode: "date" }).notNull(),
     sent: boolean("sent").notNull().default(false),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("scheduled_messages_scheduled_for_idx").on(table.scheduledFor),
@@ -542,7 +535,7 @@ export const scheduledMessages = pgTable(
 );
 
 // ── Notification Log ──
-export const notificationLog = pgTable(
+export const notificationLog = mysqlTable(
   "notification_log",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -554,10 +547,10 @@ export const notificationLog = pgTable(
     sourceChannelId: varchar("source_channel_id", { length: 64 }),
     sourceMessageId: varchar("source_message_id", { length: 64 }),
     sourceUserId: varchar("source_user_id", { length: 64 }),
-    title: text("title").notNull(),
+    title: varchar("title", { length: 255 }).notNull(),
     body: text("body"),
     read: boolean("read").notNull().default(false),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("notification_log_user_id_idx").on(table.userId),
@@ -567,7 +560,7 @@ export const notificationLog = pgTable(
 );
 
 // ── Server Backups ──
-export const serverBackups = pgTable(
+export const serverBackups = mysqlTable(
   "server_backups",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -577,14 +570,14 @@ export const serverBackups = pgTable(
     createdBy: varchar("created_by", { length: 64 })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    data: jsonb("data").notNull(),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    data: json("data").notNull(),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [index("server_backups_guild_id_idx").on(table.guildId)]
 );
 
 // ── Ban Appeals ──
-export const banAppeals = pgTable(
+export const banAppeals = mysqlTable(
   "ban_appeals",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -595,11 +588,11 @@ export const banAppeals = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     reason: text("reason").notNull(),
-    status: banAppealStatusEnum("status").notNull().default("pending"),
+    status: mysqlEnum("status", ["pending", "accepted", "rejected"]).notNull().default("pending"),
     moderatorId: varchar("moderator_id", { length: 64 }).references(() => users.id, { onDelete: "set null" }),
     moderatorReason: text("moderator_reason"),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
-    resolvedAt: timestamp("resolved_at", { mode: "date" }),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    resolvedAt: datetime("resolved_at", { mode: "date" }),
   },
   (table) => [
     index("ban_appeals_guild_id_idx").on(table.guildId),
@@ -608,19 +601,19 @@ export const banAppeals = pgTable(
 );
 
 // ── Thread Metadata ──
-export const threadMetadata = pgTable("thread_metadata", {
+export const threadMetadata = mysqlTable("thread_metadata", {
   channelId: varchar("channel_id", { length: 64 })
     .primaryKey()
     .references(() => channels.id, { onDelete: "cascade" }),
   archived: boolean("archived").notNull().default(false),
-  autoArchiveDuration: integer("auto_archive_duration").notNull().default(1440),
-  archiveTimestamp: timestamp("archive_timestamp", { mode: "date" }),
+  autoArchiveDuration: int("auto_archive_duration").notNull().default(1440),
+  archiveTimestamp: datetime("archive_timestamp", { mode: "date" }),
   locked: boolean("locked").notNull().default(false),
   invitable: boolean("invitable").notNull().default(true),
 });
 
 // ── Thread Members ──
-export const threadMembers = pgTable(
+export const threadMembers = mysqlTable(
   "thread_members",
   {
     channelId: varchar("channel_id", { length: 64 })
@@ -629,7 +622,7 @@ export const threadMembers = pgTable(
     userId: varchar("user_id", { length: 64 })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    joinTimestamp: timestamp("join_timestamp", { mode: "date" }).notNull().default(sql`NOW()`),
+    joinTimestamp: datetime("join_timestamp", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     primaryKey({ columns: [table.channelId, table.userId] }),
@@ -638,7 +631,7 @@ export const threadMembers = pgTable(
 );
 
 // ── Moderation Queue ──
-export const moderationQueue = pgTable(
+export const moderationQueue = mysqlTable(
   "moderation_queue",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -651,11 +644,11 @@ export const moderationQueue = pgTable(
     reportedBy: varchar("reported_by", { length: 64 })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    status: moderationQueueStatusEnum("status").notNull().default("pending"),
+    status: mysqlEnum("status", ["pending", "approved", "rejected", "escalated"]).notNull().default("pending"),
     moderatorId: varchar("moderator_id", { length: 64 }).references(() => users.id, { onDelete: "set null" }),
     moderatorNote: text("moderator_note"),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
-    resolvedAt: timestamp("resolved_at", { mode: "date" }),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    resolvedAt: datetime("resolved_at", { mode: "date" }),
   },
   (table) => [
     index("moderation_queue_guild_id_idx").on(table.guildId),
@@ -664,7 +657,7 @@ export const moderationQueue = pgTable(
 );
 
 // ── Notification Settings (per-server/channel granularity) ──
-export const notificationSettings = pgTable(
+export const notificationSettings = mysqlTable(
   "notification_settings",
   {
     id: serial("id").primaryKey(),
@@ -673,11 +666,11 @@ export const notificationSettings = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     guildId: varchar("guild_id", { length: 64 }).references(() => guilds.id, { onDelete: "cascade" }),
     channelId: varchar("channel_id", { length: 64 }).references(() => channels.id, { onDelete: "cascade" }),
-    level: notificationLevelEnum("level").notNull().default("all"),
+    level: mysqlEnum("level", ["all", "mentions", "none"]).notNull().default("all"),
     suppressEveryone: boolean("suppress_everyone").notNull().default(false),
     suppressRoles: boolean("suppress_roles").notNull().default(false),
     muted: boolean("muted").notNull().default(false),
-    muteUntil: timestamp("mute_until", { mode: "date" }),
+    muteUntil: datetime("mute_until", { mode: "date" }),
   },
   (table) => [
     unique("notification_settings_user_guild_channel_unique").on(table.userId, table.guildId, table.channelId),
@@ -687,7 +680,7 @@ export const notificationSettings = pgTable(
 );
 
 // ── Thread Templates ──
-export const threadTemplates = pgTable(
+export const threadTemplates = mysqlTable(
   "thread_templates",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -702,7 +695,7 @@ export const threadTemplates = pgTable(
     createdBy: varchar("created_by", { length: 64 })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("thread_templates_channel_id_idx").on(table.channelId),
@@ -714,7 +707,7 @@ export const threadTemplates = pgTable(
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Forum Tags ──
-export const forumTags = pgTable(
+export const forumTags = mysqlTable(
   "forum_tags",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -725,13 +718,13 @@ export const forumTags = pgTable(
     emojiId: varchar("emoji_id", { length: 64 }),
     emojiName: varchar("emoji_name", { length: 255 }),
     moderated: boolean("moderated").notNull().default(false),
-    position: integer("position").notNull().default(0),
+    position: int("position").notNull().default(0),
   },
   (table) => [index("forum_tags_channel_id_idx").on(table.channelId)]
 );
 
 // ── Forum Post Tags (join table) ──
-export const forumPostTags = pgTable(
+export const forumPostTags = mysqlTable(
   "forum_post_tags",
   {
     threadId: varchar("thread_id", { length: 64 })
@@ -748,38 +741,38 @@ export const forumPostTags = pgTable(
 );
 
 // ── AutoMod Config (persistent) ──
-export const automodConfig = pgTable("automod_config", {
+export const automodConfig = mysqlTable("automod_config", {
   guildId: varchar("guild_id", { length: 64 })
     .primaryKey()
     .references(() => guilds.id, { onDelete: "cascade" }),
   enabled: boolean("enabled").notNull().default(false),
-  keywordFilters: jsonb("keyword_filters").$type<{
+  keywordFilters: json("keyword_filters").$type<{
     enabled: boolean;
     blockedWords: string[];
     action: "delete" | "warn" | "timeout";
   }>().notNull().default({ enabled: false, blockedWords: [], action: "delete" }),
-  mentionSpam: jsonb("mention_spam").$type<{
+  mentionSpam: json("mention_spam").$type<{
     enabled: boolean;
     maxMentions: number;
     action: "delete" | "warn" | "timeout";
   }>().notNull().default({ enabled: false, maxMentions: 10, action: "delete" }),
-  linkFilter: jsonb("link_filter").$type<{
+  linkFilter: json("link_filter").$type<{
     enabled: boolean;
     blockAllLinks: boolean;
     whitelist: string[];
     action: "delete" | "warn" | "timeout";
   }>().notNull().default({ enabled: false, blockAllLinks: false, whitelist: [], action: "delete" }),
-  antiRaid: jsonb("anti_raid").$type<{
+  antiRaid: json("anti_raid").$type<{
     enabled: boolean;
     joinRateLimit: number;
     joinRateWindow: number;
     action: "lockdown" | "kick" | "notify";
   }>().notNull().default({ enabled: false, joinRateLimit: 10, joinRateWindow: 60, action: "notify" }),
-  updatedAt: timestamp("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
+  updatedAt: datetime("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
 });
 
 // ── Passkey Credentials (WebAuthn) ──
-export const passkeyCredentials = pgTable(
+export const passkeyCredentials = mysqlTable(
   "passkey_credentials",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -788,12 +781,12 @@ export const passkeyCredentials = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     credentialId: varchar("credential_id", { length: 512 }).notNull(),
     publicKey: text("public_key").notNull(),
-    counter: integer("counter").notNull().default(0),
-    deviceType: text("device_type"),
+    counter: int("counter").notNull().default(0),
+    deviceType: varchar("device_type", { length: 255 }),
     backedUp: boolean("backed_up").notNull().default(false),
-    transports: jsonb("transports").$type<string[]>(),
+    transports: json("transports").$type<string[]>(),
     aaguid: varchar("aaguid", { length: 64 }),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("passkey_credentials_user_idx").on(table.userId),
@@ -802,7 +795,7 @@ export const passkeyCredentials = pgTable(
 );
 
 // ── Verification Codes ──
-export const verificationCodes = pgTable(
+export const verificationCodes = mysqlTable(
   "verification_codes",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -810,10 +803,10 @@ export const verificationCodes = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     code: varchar("code", { length: 255 }).notNull(),
-    type: verificationCodeTypeEnum("type").notNull(),
-    expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+    type: mysqlEnum("type", ["email", "phone", "password_reset"]).notNull(),
+    expiresAt: datetime("expires_at", { mode: "date" }).notNull(),
     used: boolean("used").notNull().default(false),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("verification_codes_user_idx").on(table.userId),
@@ -823,7 +816,7 @@ export const verificationCodes = pgTable(
 );
 
 // ── Guild Events ──
-export const guildEvents = pgTable(
+export const guildEvents = mysqlTable(
   "guild_events",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -834,21 +827,21 @@ export const guildEvents = pgTable(
     creatorId: varchar("creator_id", { length: 64 }).references(() => users.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
-    image: text("image"),
-    scheduledStartTime: timestamp("scheduled_start_time", { mode: "date" }).notNull(),
-    scheduledEndTime: timestamp("scheduled_end_time", { mode: "date" }),
-    privacyLevel: integer("privacy_level").notNull().default(2),
-    status: integer("status").notNull().default(1),
-    entityType: integer("entity_type").notNull().default(1),
-    entityMetadata: jsonb("entity_metadata").$type<{ location?: string }>(),
-    recurrenceRule: jsonb("recurrence_rule").$type<{
+    image: varchar("image", { length: 255 }),
+    scheduledStartTime: datetime("scheduled_start_time", { mode: "date" }).notNull(),
+    scheduledEndTime: datetime("scheduled_end_time", { mode: "date" }),
+    privacyLevel: int("privacy_level").notNull().default(2),
+    status: int("status").notNull().default(1),
+    entityType: int("entity_type").notNull().default(1),
+    entityMetadata: json("entity_metadata").$type<{ location?: string }>(),
+    recurrenceRule: json("recurrence_rule").$type<{
       frequency: "daily" | "weekly" | "monthly";
       interval?: number;
       byWeekday?: number[];
       count?: number;
       endDate?: string;
     }>(),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("guild_events_guild_idx").on(table.guildId),
@@ -857,7 +850,7 @@ export const guildEvents = pgTable(
 );
 
 // ── Guild Event Users (RSVP) ──
-export const guildEventUsers = pgTable(
+export const guildEventUsers = mysqlTable(
   "guild_event_users",
   {
     eventId: varchar("event_id", { length: 64 })
@@ -866,7 +859,7 @@ export const guildEventUsers = pgTable(
     userId: varchar("user_id", { length: 64 })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    status: guildEventUserStatusEnum("status").notNull().default("interested"),
+    status: mysqlEnum("status", ["interested", "going", "not_going"]).notNull().default("interested"),
   },
   (table) => [
     primaryKey({ columns: [table.eventId, table.userId] }),
@@ -880,12 +873,12 @@ export const guildEventUsers = pgTable(
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Applications (Bots) ──
-export const applications = pgTable(
+export const applications = mysqlTable(
   "applications",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     name: varchar("name", { length: 255 }).notNull(),
-    icon: text("icon"),
+    icon: varchar("icon", { length: 255 }),
     description: text("description").notNull().default(""),
     botPublic: boolean("bot_public").notNull().default(true),
     botRequireCodeGrant: boolean("bot_require_code_grant").notNull().default(false),
@@ -893,16 +886,16 @@ export const applications = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     botUserId: varchar("bot_user_id", { length: 64 }).references(() => users.id, { onDelete: "cascade" }),
-    verifyKey: text("verify_key").notNull(),
-    flags: integer("flags").notNull().default(0),
-    interactionsEndpointUrl: text("interactions_endpoint_url"),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    verifyKey: varchar("verify_key", { length: 255 }).notNull(),
+    flags: int("flags").notNull().default(0),
+    interactionsEndpointUrl: varchar("interactions_endpoint_url", { length: 2048 }),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [index("applications_owner_idx").on(table.ownerId)]
 );
 
 // ── Application Commands (Slash Commands) ──
-export const applicationCommands = pgTable(
+export const applicationCommands = mysqlTable(
   "application_commands",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -912,8 +905,8 @@ export const applicationCommands = pgTable(
     guildId: varchar("guild_id", { length: 64 }).references(() => guilds.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description").notNull(),
-    type: integer("type").notNull().default(1),
-    options: jsonb("options").$type<ApplicationCommandOption[]>(),
+    type: int("type").notNull().default(1),
+    options: json("options").$type<ApplicationCommandOption[]>(),
     defaultMemberPermissions: varchar("default_member_permissions", { length: 64 }),
     dmPermission: boolean("dm_permission").notNull().default(true),
     nsfw: boolean("nsfw").notNull().default(false),
@@ -926,52 +919,52 @@ export const applicationCommands = pgTable(
 );
 
 // ── Message Components ──
-export const messageComponents = pgTable(
+export const messageComponents = mysqlTable(
   "message_components",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     messageId: varchar("message_id", { length: 64 })
       .notNull()
       .references(() => messages.id, { onDelete: "cascade" }),
-    type: integer("type").notNull(),
+    type: int("type").notNull(),
     customId: varchar("custom_id", { length: 255 }),
-    label: text("label"),
-    style: integer("style"),
-    url: text("url"),
+    label: varchar("label", { length: 255 }),
+    style: int("style"),
+    url: varchar("url", { length: 2048 }),
     disabled: boolean("disabled").notNull().default(false),
-    emoji: jsonb("emoji").$type<{ id?: string; name?: string; animated?: boolean }>(),
-    options: jsonb("options").$type<SelectMenuOption[]>(),
-    placeholder: text("placeholder"),
-    minValues: integer("min_values"),
-    maxValues: integer("max_values"),
-    minLength: integer("min_length"),
-    maxLength: integer("max_length"),
+    emoji: json("emoji").$type<{ id?: string; name?: string; animated?: boolean }>(),
+    options: json("options").$type<SelectMenuOption[]>(),
+    placeholder: varchar("placeholder", { length: 255 }),
+    minValues: int("min_values"),
+    maxValues: int("max_values"),
+    minLength: int("min_length"),
+    maxLength: int("max_length"),
     required: boolean("required"),
     parentId: varchar("parent_id", { length: 64 }),
-    position: integer("position").notNull().default(0),
+    position: int("position").notNull().default(0),
   },
   (table) => [index("message_components_message_idx").on(table.messageId)]
 );
 
 // ── Interactions ──
-export const interactions = pgTable(
+export const interactions = mysqlTable(
   "interactions",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     applicationId: varchar("application_id", { length: 64 })
       .notNull()
       .references(() => applications.id, { onDelete: "cascade" }),
-    type: integer("type").notNull(),
+    type: int("type").notNull(),
     guildId: varchar("guild_id", { length: 64 }).references(() => guilds.id, { onDelete: "cascade" }),
     channelId: varchar("channel_id", { length: 64 }).references(() => channels.id, { onDelete: "cascade" }),
     userId: varchar("user_id", { length: 64 })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    token: text("token").notNull(),
-    data: jsonb("data"),
-    version: integer("version").notNull().default(1),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
-    respondedAt: timestamp("responded_at", { mode: "date" }),
+    token: varchar("token", { length: 255 }).notNull(),
+    data: json("data"),
+    version: int("version").notNull().default(1),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    respondedAt: datetime("responded_at", { mode: "date" }),
   },
   (table) => [
     index("interactions_app_idx").on(table.applicationId),
@@ -986,7 +979,7 @@ export const interactions = pgTable(
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Stickers ──
-export const stickers = pgTable(
+export const stickers = mysqlTable(
   "stickers",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -995,17 +988,17 @@ export const stickers = pgTable(
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
     tags: varchar("tags", { length: 255 }).notNull(),
-    type: integer("type").notNull(),
-    formatType: integer("format_type").notNull(),
+    type: int("type").notNull(),
+    formatType: int("format_type").notNull(),
     available: boolean("available").notNull().default(true),
     userId: varchar("user_id", { length: 64 }).references(() => users.id, { onDelete: "cascade" }),
-    sortValue: integer("sort_value"),
+    sortValue: int("sort_value"),
   },
   (table) => [index("stickers_guild_idx").on(table.guildId)]
 );
 
 // ── Message Stickers (join table) ──
-export const messageStickers = pgTable(
+export const messageStickers = mysqlTable(
   "message_stickers",
   {
     messageId: varchar("message_id", { length: 64 })
@@ -1023,14 +1016,14 @@ export const messageStickers = pgTable(
 );
 
 // ── User Activities (Rich Presence) ──
-export const userActivities = pgTable(
+export const userActivities = mysqlTable(
   "user_activities",
   {
     userId: varchar("user_id", { length: 64 })
       .primaryKey()
       .references(() => users.id, { onDelete: "cascade" }),
-    activities: jsonb("activities").$type<UserActivity[]>().notNull().default([]),
-    updatedAt: timestamp("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    activities: json("activities").$type<UserActivity[]>().notNull().default([]),
+    updatedAt: datetime("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
   }
 );
 
@@ -1039,7 +1032,7 @@ export const userActivities = pgTable(
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── User Sessions ──
-export const userSessions = pgTable(
+export const userSessions = mysqlTable(
   "user_sessions",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -1047,11 +1040,11 @@ export const userSessions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     tokenHash: varchar("token_hash", { length: 255 }).notNull(),
-    deviceInfo: jsonb("device_info").$type<{ os?: string; browser?: string; device?: string }>(),
+    deviceInfo: json("device_info").$type<{ os?: string; browser?: string; device?: string }>(),
     ipAddress: varchar("ip_address", { length: 45 }),
-    lastActiveAt: timestamp("last_active_at", { mode: "date" }).notNull().default(sql`NOW()`),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
-    expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+    lastActiveAt: datetime("last_active_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    expiresAt: datetime("expires_at", { mode: "date" }).notNull(),
   },
   (table) => [
     index("user_sessions_user_idx").on(table.userId),
@@ -1060,16 +1053,16 @@ export const userSessions = pgTable(
 );
 
 // ── Recovery Keys ──
-export const recoveryKeys = pgTable(
+export const recoveryKeys = mysqlTable(
   "recovery_keys",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     userId: varchar("user_id", { length: 64 })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    keyHash: text("key_hash").notNull(),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
-    usedAt: timestamp("used_at", { mode: "date" }),
+    keyHash: varchar("key_hash", { length: 255 }).notNull(),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    usedAt: datetime("used_at", { mode: "date" }),
   },
   (table) => [uniqueIndex("recovery_keys_user_idx").on(table.userId)]
 );
@@ -1079,7 +1072,7 @@ export const recoveryKeys = pgTable(
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── User Notes (private notes about other users) ──
-export const userNotes = pgTable(
+export const userNotes = mysqlTable(
   "user_notes",
   {
     userId: varchar("user_id", { length: 64 })
@@ -1089,7 +1082,7 @@ export const userNotes = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     note: text("note").notNull(),
-    updatedAt: timestamp("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    updatedAt: datetime("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     primaryKey({ columns: [table.userId, table.targetUserId] }),
@@ -1099,7 +1092,7 @@ export const userNotes = pgTable(
 );
 
 // ── Guild Templates (server templates) ──
-export const guildTemplates = pgTable(
+export const guildTemplates = mysqlTable(
   "guild_templates",
   {
     code: varchar("code", { length: 64 }).primaryKey(),
@@ -1108,13 +1101,13 @@ export const guildTemplates = pgTable(
       .references(() => guilds.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
-    usageCount: integer("usage_count").notNull().default(0),
+    usageCount: int("usage_count").notNull().default(0),
     creatorId: varchar("creator_id", { length: 64 })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    serializedGuild: jsonb("serialized_guild").$type<SerializedGuild>().notNull(),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
-    updatedAt: timestamp("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    serializedGuild: json("serialized_guild").$type<SerializedGuild>().notNull(),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    updatedAt: datetime("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
     isDirty: boolean("is_dirty").notNull().default(false),
   },
   (table) => [
@@ -1123,30 +1116,30 @@ export const guildTemplates = pgTable(
 );
 
 // ── Guild Welcome Screens ──
-export const guildWelcomeScreens = pgTable("guild_welcome_screens", {
+export const guildWelcomeScreens = mysqlTable("guild_welcome_screens", {
   guildId: varchar("guild_id", { length: 64 })
     .primaryKey()
     .references(() => guilds.id, { onDelete: "cascade" }),
   description: text("description"),
   enabled: boolean("enabled").notNull().default(false),
-  welcomeChannels: jsonb("welcome_channels").$type<WelcomeChannel[]>().notNull().default([]),
-  updatedAt: timestamp("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
+  welcomeChannels: json("welcome_channels").$type<WelcomeChannel[]>().notNull().default([]),
+  updatedAt: datetime("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
 });
 
 // ── Guild Onboarding ──
-export const guildOnboarding = pgTable("guild_onboarding", {
+export const guildOnboarding = mysqlTable("guild_onboarding", {
   guildId: varchar("guild_id", { length: 64 })
     .primaryKey()
     .references(() => guilds.id, { onDelete: "cascade" }),
   enabled: boolean("enabled").notNull().default(false),
-  defaultChannelIds: jsonb("default_channel_ids").$type<string[]>().notNull().default([]),
-  mode: integer("mode").notNull().default(0),
-  prompts: jsonb("prompts").$type<OnboardingPrompt[]>().notNull().default([]),
-  updatedAt: timestamp("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
+  defaultChannelIds: json("default_channel_ids").$type<string[]>().notNull().default([]),
+  mode: int("mode").notNull().default(0),
+  prompts: json("prompts").$type<OnboardingPrompt[]>().notNull().default([]),
+  updatedAt: datetime("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
 });
 
 // ── Guild Widgets ──
-export const guildWidgets = pgTable("guild_widgets", {
+export const guildWidgets = mysqlTable("guild_widgets", {
   guildId: varchar("guild_id", { length: 64 })
     .primaryKey()
     .references(() => guilds.id, { onDelete: "cascade" }),
@@ -1155,7 +1148,7 @@ export const guildWidgets = pgTable("guild_widgets", {
 });
 
 // ── Channel Following (announcements) ──
-export const channelFollowers = pgTable(
+export const channelFollowers = mysqlTable(
   "channel_followers",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
@@ -1168,7 +1161,7 @@ export const channelFollowers = pgTable(
     guildId: varchar("guild_id", { length: 64 })
       .notNull()
       .references(() => guilds.id, { onDelete: "cascade" }),
-    createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
+    createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },
   (table) => [
     index("channel_followers_channel_idx").on(table.channelId),
@@ -1177,15 +1170,15 @@ export const channelFollowers = pgTable(
 );
 
 // ── Guild Previews (for discovery) ──
-export const guildPreviews = pgTable("guild_previews", {
+export const guildPreviews = mysqlTable("guild_previews", {
   guildId: varchar("guild_id", { length: 64 })
     .primaryKey()
     .references(() => guilds.id, { onDelete: "cascade" }),
-  approximateMemberCount: integer("approximate_member_count").notNull().default(0),
-  approximatePresenceCount: integer("approximate_presence_count").notNull().default(0),
+  approximateMemberCount: int("approximate_member_count").notNull().default(0),
+  approximatePresenceCount: int("approximate_presence_count").notNull().default(0),
   discoverable: boolean("discoverable").notNull().default(false),
-  featuredAt: timestamp("featured_at", { mode: "date" }),
-  updatedAt: timestamp("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
+  featuredAt: datetime("featured_at", { mode: "date" }),
+  updatedAt: datetime("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
 });
 
 // ══════════════════════════════════════════════════════════════════════════════

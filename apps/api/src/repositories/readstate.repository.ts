@@ -9,8 +9,7 @@ export const readstateRepository = {
     await db
       .insert(schema.readStates)
       .values({ userId, channelId, lastMessageId, mentionCount: 0 })
-      .onConflictDoUpdate({
-        target: [schema.readStates.userId, schema.readStates.channelId],
+      .onDuplicateKeyUpdate({
         set: { lastMessageId, mentionCount: 0 },
       });
   },
@@ -18,8 +17,7 @@ export const readstateRepository = {
     await db
       .insert(schema.readStates)
       .values({ userId, channelId, mentionCount: 1 })
-      .onConflictDoUpdate({
-        target: [schema.readStates.userId, schema.readStates.channelId],
+      .onDuplicateKeyUpdate({
         set: { mentionCount: sql`${schema.readStates.mentionCount} + 1` },
       });
   },

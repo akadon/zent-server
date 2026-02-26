@@ -1,4 +1,4 @@
-import { eq, and, inArray, count } from "drizzle-orm";
+import { eq, and, inArray, count, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 
 export const reactionRepository = {
@@ -126,7 +126,7 @@ export const reactionRepository = {
         emojiName: data.emojiName,
         emojiId: data.emojiId ?? "",
       })
-      .onConflictDoNothing();
+      .onDuplicateKeyUpdate({ set: { messageId: sql`message_id` } });
   },
   async findUsersWithDetails(messageId: string, emojiName: string, emojiId?: string) {
     const reactions = await db

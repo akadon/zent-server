@@ -19,8 +19,7 @@ export const userNotesRepository = {
     await db
       .insert(schema.userNotes)
       .values({ userId, targetUserId, note, updatedAt: new Date() })
-      .onConflictDoUpdate({
-        target: [schema.userNotes.userId, schema.userNotes.targetUserId],
+      .onDuplicateKeyUpdate({
         set: { note, updatedAt: new Date() },
       });
   },

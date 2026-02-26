@@ -1,18 +1,17 @@
-import { drizzle } from "drizzle-orm/node-postgres";
-import pg from "pg";
+import { drizzle } from "drizzle-orm/mysql2";
+import mysql from "mysql2/promise";
 import * as schema from "./schema.js";
 import { env } from "../config/env.js";
 
-const { Pool } = pg;
-
-const pool = new Pool({
-  connectionString: env.DATABASE_URL,
-  max: 15,
-  idleTimeoutMillis: 60000,
-  connectionTimeoutMillis: 10000,
+const pool = mysql.createPool({
+  uri: env.DATABASE_URL,
+  waitForConnections: true,
+  connectionLimit: 15,
+  idleTimeout: 60000,
+  connectTimeout: 10000,
 });
 
-export const db = drizzle({ client: pool, schema });
+export const db = drizzle({ client: pool, schema, mode: "default" });
 
 export type Database = typeof db;
 export { schema };

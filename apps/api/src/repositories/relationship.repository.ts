@@ -41,8 +41,7 @@ export const relationshipRepository = {
     await db
       .insert(schema.relationships)
       .values({ userId, targetId, type })
-      .onConflictDoUpdate({
-        target: [schema.relationships.userId, schema.relationships.targetId],
+      .onDuplicateKeyUpdate({
         set: { type },
       });
   },
@@ -88,15 +87,13 @@ export const relationshipRepository = {
       await tx
         .insert(schema.relationships)
         .values({ userId, targetId, type: 4 })
-        .onConflictDoUpdate({
-          target: [schema.relationships.userId, schema.relationships.targetId],
+        .onDuplicateKeyUpdate({
           set: { type: 4 },
         });
       await tx
         .insert(schema.relationships)
         .values({ userId: targetId, targetId: userId, type: 3 })
-        .onConflictDoUpdate({
-          target: [schema.relationships.userId, schema.relationships.targetId],
+        .onDuplicateKeyUpdate({
           set: { type: 3 },
         });
     });
@@ -119,8 +116,7 @@ export const relationshipRepository = {
       await tx
         .insert(schema.relationships)
         .values({ userId, targetId, type: 2 })
-        .onConflictDoUpdate({
-          target: [schema.relationships.userId, schema.relationships.targetId],
+        .onDuplicateKeyUpdate({
           set: { type: 2 },
         });
     });

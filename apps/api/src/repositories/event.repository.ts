@@ -92,8 +92,7 @@ export const eventRepository = {
     await db
       .insert(schema.guildEventUsers)
       .values({ eventId, userId, status: status ?? "interested" })
-      .onConflictDoUpdate({
-        target: [schema.guildEventUsers.eventId, schema.guildEventUsers.userId],
+      .onDuplicateKeyUpdate({
         set: { status: status ?? "interested" },
       });
   },
