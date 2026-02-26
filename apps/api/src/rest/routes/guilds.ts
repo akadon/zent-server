@@ -24,6 +24,7 @@ import { userRepository } from "../../repositories/user.repository.js";
 import { guildSettingsRepository } from "../../repositories/guild-settings.repository.js";
 
 import { dispatchGuild } from "../../utils/dispatch.js";
+import { config } from "../../config/config.js";
 
 export async function guildRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authMiddleware);

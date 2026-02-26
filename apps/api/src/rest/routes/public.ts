@@ -58,7 +58,7 @@ export async function publicRoutes(app: FastifyInstance) {
         guildId: channel.guildId,
       },
       guild,
-      messages: recentMessages.reverse().map((m) => ({
+      messages: recentMessages.reverse().map((m: any) => ({
         id: m.id,
         content: m.content,
         authorId: m.authorId,
