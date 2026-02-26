@@ -108,25 +108,25 @@ export const applicationRepository = {
     name: string;
     description: string;
     type?: number;
-    options?: unknown;
+    options?: any;
     defaultMemberPermissions?: string | null;
     dmPermission?: boolean;
     nsfw?: boolean;
     version: string;
   }) {
-    await db.insert(schema.applicationCommands).values(data);
+    await db.insert(schema.applicationCommands).values(data as any);
     return (await db.select().from(schema.applicationCommands).where(eq(schema.applicationCommands.id, data.id)).limit(1))[0]!;
   },
   async updateCommand(id: string, data: Partial<{
     name: string;
     description: string;
-    options: unknown;
+    options: any;
     defaultMemberPermissions: string | null;
     dmPermission: boolean;
     nsfw: boolean;
     version: string;
   }>) {
-    await db.update(schema.applicationCommands).set(data).where(eq(schema.applicationCommands.id, id));
+    await db.update(schema.applicationCommands).set(data as any).where(eq(schema.applicationCommands.id, id));
     return (await db.select().from(schema.applicationCommands).where(eq(schema.applicationCommands.id, id)).limit(1))[0]!;
   },
   async deleteCommand(id: string) {
