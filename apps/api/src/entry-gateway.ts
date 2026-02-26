@@ -14,7 +14,7 @@ const server = createServer((req, res) => {
   res.end();
 });
 
-const io = createGateway(server);
+createGateway(server);
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Gateway service listening on port ${PORT}`);

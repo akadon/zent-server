@@ -195,9 +195,8 @@ const start = async () => {
   try {
     const server = app.server;
 
-    // Attach Socket.IO gateway to the same HTTP server
-    const io = createGateway(server);
-    app.decorate("io", io);
+    // Attach WebSocket gateway to the same HTTP server
+    createGateway(server);
 
     await app.listen({ port: env.API_PORT, host: env.API_HOST });
     app.log.info(`API server listening on ${env.API_HOST}:${env.API_PORT}`);
