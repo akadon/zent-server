@@ -32,11 +32,43 @@ interface CacheEntry {
 
 const permLRU = new Map<string, CacheEntry>();
 
+// Index: guildId -> Set of LRU keys belonging to that guild
+// Avoids O(n) scan of all LRU keys on guild-wide invalidation
+const guildKeyIndex = new Map<string, Set<string>>();
+
+function extractGuildId(key: string): string | null {
+  // Key format: "userId:guildId" or "userId:guildId:channelId"
+  const parts = key.split(":");
+  return parts.length >= 2 ? parts[1]! : null;
+}
+
+function indexAdd(key: string) {
+  const guildId = extractGuildId(key);
+  if (!guildId) return;
+  let set = guildKeyIndex.get(guildId);
+  if (!set) {
+    set = new Set();
+    guildKeyIndex.set(guildId, set);
+  }
+  set.add(key);
+}
+
+function indexRemove(key: string) {
+  const guildId = extractGuildId(key);
+  if (!guildId) return;
+  const set = guildKeyIndex.get(guildId);
+  if (set) {
+    set.delete(key);
+    if (set.size === 0) guildKeyIndex.delete(guildId);
+  }
+}
+
 function lruGet(key: string): bigint | null {
   const entry = permLRU.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
     permLRU.delete(key);
+    indexRemove(key);
     return null;
   }
   // Move to end (most recently used)
@@ -49,17 +81,31 @@ function lruSet(key: string, value: bigint) {
   if (permLRU.size >= PERM_LRU_MAX) {
     // Evict oldest (first entry)
     const firstKey = permLRU.keys().next().value;
-    if (firstKey) permLRU.delete(firstKey);
+    if (firstKey) {
+      permLRU.delete(firstKey);
+      indexRemove(firstKey);
+    }
   }
   permLRU.set(key, { value: value.toString(), expiresAt: Date.now() + PERM_LRU_TTL });
+  indexAdd(key);
 }
 
 function lruDelete(pattern: string) {
   for (const key of permLRU.keys()) {
     if (key.startsWith(pattern)) {
       permLRU.delete(key);
+      indexRemove(key);
     }
   }
+}
+
+function lruDeleteByGuildId(guildId: string) {
+  const set = guildKeyIndex.get(guildId);
+  if (!set) return;
+  for (const key of set) {
+    permLRU.delete(key);
+  }
+  guildKeyIndex.delete(guildId);
 }
 
 async function cachedPermissions(key: string, compute: () => Promise<PermissionsBitfield>): Promise<PermissionsBitfield> {
@@ -120,12 +166,8 @@ export async function invalidatePermissions(userId: string, guildId: string) {
  * Invalidate permission cache for ALL users in a guild.
  */
 export async function invalidateGuildPermissions(guildId: string) {
-  // Clear local LRU entries containing this guildId
-  for (const key of permLRU.keys()) {
-    if (key.includes(`:${guildId}`)) {
-      permLRU.delete(key);
-    }
-  }
+  // Clear local LRU entries for this guildId using the index (O(1) lookup)
+  lruDeleteByGuildId(guildId);
 
   const pattern = `perm:*:${guildId}*`;
   const keys = await redisScan(pattern);
@@ -145,11 +187,7 @@ permInvalidateSub.on("message", (_channel, message) => {
     if (userId && guildId) {
       lruDelete(`${userId}:${guildId}`);
     } else if (guildId) {
-      for (const key of permLRU.keys()) {
-        if (key.includes(`:${guildId}`)) {
-          permLRU.delete(key);
-        }
-      }
+      lruDeleteByGuildId(guildId);
     }
   } catch {
     // ignore

@@ -60,9 +60,10 @@ export const memberRepository = {
   async findByGuildIdWithLimit(guildId: string, limit: number) {
     return db.select().from(schema.members).where(eq(schema.members.guildId, guildId)).limit(limit);
   },
-  async findAllMemberRolesByGuildId(guildId: string) {
+  async findAllMemberRolesByGuildId(guildId: string, limit: number = 10000) {
     return db.select({ userId: schema.memberRoles.userId, roleId: schema.memberRoles.roleId }).from(schema.memberRoles)
-      .where(eq(schema.memberRoles.guildId, guildId));
+      .where(eq(schema.memberRoles.guildId, guildId))
+      .limit(limit);
   },
   async findMembershipsByUserId(userId: string) {
     return db.select({
