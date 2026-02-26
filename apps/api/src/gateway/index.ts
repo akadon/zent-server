@@ -38,7 +38,7 @@ interface GatewaySession {
   lastHeartbeat: number;
   guilds: string[];
   intents: number;
-  rateLimits: Record<number, number[]>;
+  rateLimits: Record<number, { count: number; windowStart: number }>;
 }
 
 // Per-opcode rate limits: [maxCount, windowMs]
@@ -55,14 +55,13 @@ function checkOpcodeRateLimit(session: GatewaySession, op: number): boolean {
   if (!limit) return true;
   const [maxCount, windowMs] = limit;
   const now = Date.now();
-  if (!session.rateLimits[op]) session.rateLimits[op] = [];
-  const timestamps = session.rateLimits[op]!;
-  // Remove expired entries
-  while (timestamps.length > 0 && now - timestamps[0]! > windowMs) {
-    timestamps.shift();
+  const bucket = session.rateLimits[op];
+  if (!bucket || now - bucket.windowStart > windowMs) {
+    session.rateLimits[op] = { count: 1, windowStart: now };
+    return true;
   }
-  if (timestamps.length >= maxCount) return false;
-  timestamps.push(now);
+  if (bucket.count >= maxCount) return false;
+  bucket.count++;
   return true;
 }
 
@@ -217,7 +216,13 @@ export function createGateway(httpServer: HttpServer) {
       origin: config.cors.origins,
       methods: ["GET", "POST"],
     },
-    transports: ["websocket", "polling"],
+    transports: ["websocket"],
+    maxHttpBufferSize: 1e6,
+    serveClient: false,
+    pingInterval: 25000,
+    pingTimeout: 20000,
+    connectTimeout: 10000,
+    perMessageDeflate: false,
   });
 
   // Redis adapter for horizontal scaling

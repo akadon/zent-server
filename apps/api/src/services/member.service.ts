@@ -40,10 +40,10 @@ export async function getGuildMembers(guildId: string, limit: number = 1000) {
 
   const userIds = memberList.map((m) => m.userId);
 
-  // Batch fetch all users and member roles in parallel
+  // Batch fetch users and member roles for these members only (not entire guild)
   const [userList, allMemberRoles] = await Promise.all([
     userRepository.findPublicByIds(userIds),
-    memberRepository.findAllMemberRolesByGuildId(guildId),
+    memberRepository.getMemberRolesByGuildAndUserIds(guildId, userIds),
   ]);
 
   const userMap = new Map(userList.map((u) => [u.id, u]));

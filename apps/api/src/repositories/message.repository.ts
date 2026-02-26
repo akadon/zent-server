@@ -4,8 +4,8 @@ import { redis } from "../config/redis.js";
 
 // Redis cache for recent messages per channel (NoSQL-like document access)
 const MSG_CACHE_PREFIX = "msgcache:";
-const MSG_CACHE_TTL = 300; // 5 minutes
-const MSG_CACHE_MAX = 50; // cache last 50 messages per channel
+const MSG_CACHE_TTL = 600; // 10 minutes
+const MSG_CACHE_MAX = 200; // cache last 200 messages per channel
 
 type AuthorSnapshot = { id: string; username: string; displayName: string | null; avatar: string | null };
 

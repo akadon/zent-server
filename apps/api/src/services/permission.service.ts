@@ -7,9 +7,9 @@ import { guildRepository } from "../repositories/guild.repository.js";
 
 // ── Two-Tier Permission Cache ──
 
-const PERM_LRU_MAX = 5000;
-const PERM_LRU_TTL = 60_000; // 60s
-const PERM_REDIS_TTL = 300; // 5min
+const PERM_LRU_MAX = 50_000;
+const PERM_LRU_TTL = 120_000; // 2min
+const PERM_REDIS_TTL = 600; // 10min
 
 // Singleflight: prevent thundering herd on cache miss
 const inFlightRequests = new Map<string, Promise<PermissionsBitfield>>();

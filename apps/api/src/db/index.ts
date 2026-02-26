@@ -6,9 +6,12 @@ import { env } from "../config/env.js";
 const pool = mysql.createPool({
   uri: env.DATABASE_URL,
   waitForConnections: true,
-  connectionLimit: 15,
+  connectionLimit: 100,
   idleTimeout: 60000,
   connectTimeout: 10000,
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 30000,
 });
 
 export const db = drizzle({ client: pool, schema, mode: "default" });

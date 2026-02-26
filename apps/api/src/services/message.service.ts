@@ -156,7 +156,7 @@ export async function getChannelMessages(
 
   if (messages.length === 0) return [];
 
-  const messageIds = messages.map((m) => m.id);
+  const messageIds = messages.map((m: any) => m.id);
 
   // Batch fetch attachments, reactions, polls (3 queries total, not N)
   const [allAttachments, reactionsByMessage, allPolls] = await Promise.all([
@@ -178,8 +178,8 @@ export async function getChannelMessages(
 
   // Batch fetch referenced messages (one level only, uses snapshot too)
   const refIds = messages
-    .map((m) => m.referencedMessageId)
-    .filter((id): id is string => id !== null);
+    .map((m: any) => m.referencedMessageId)
+    .filter((id: any): id is string => id !== null);
 
   const referencedMessages = new Map<string, Record<string, any>>();
   if (refIds.length > 0) {
@@ -200,7 +200,7 @@ export async function getChannelMessages(
     }
   }
 
-  return messages.map((msg) => {
+  return messages.map((msg: any) => {
     // Prefer embedded snapshot; fall back to authorId-based stub for old messages
     const author = (msg.authorSnapshot as any) ?? {
       id: msg.authorId, username: "Deleted User", displayName: null, avatar: null, status: "offline",
@@ -283,7 +283,7 @@ export async function getPinnedMessages(channelId: string, currentUserId?: strin
 
   if (messages.length === 0) return [];
 
-  const messageIds = messages.map((m) => m.id);
+  const messageIds = messages.map((m: any) => m.id);
   const [allAttachments, reactionsByMessage, allPolls] = await Promise.all([
     messageRepository.findAttachmentsByMessageIds(messageIds),
     reactionRepository.getBatchAggregated(messageIds, currentUserId),
@@ -301,7 +301,7 @@ export async function getPinnedMessages(channelId: string, currentUserId?: strin
     ? await pollService.getBatchPolls(allPolls, currentUserId)
     : new Map<string, Record<string, any>>();
 
-  const refIds = messages.map((m) => m.referencedMessageId).filter((id): id is string => id !== null);
+  const refIds = messages.map((m: any) => m.referencedMessageId).filter((id: any): id is string => id !== null);
   const referencedMessages = new Map<string, Record<string, any>>();
   if (refIds.length > 0) {
     const refRows = await messageRepository.findByIdsWithAuthor(refIds);
@@ -321,7 +321,7 @@ export async function getPinnedMessages(channelId: string, currentUserId?: strin
     }
   }
 
-  return messages.map((msg) => {
+  return messages.map((msg: any) => {
     const author = (msg.authorSnapshot as any) ?? {
       id: msg.authorId, username: "Deleted User", displayName: null, avatar: null, status: "offline",
     };
