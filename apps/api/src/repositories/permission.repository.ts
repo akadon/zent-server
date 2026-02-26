@@ -39,7 +39,10 @@ export const permissionRepository = {
     allow: string;
     deny: string;
   }) {
-    await db.insert(schema.permissionOverwrites).values(data);
+    await db.insert(schema.permissionOverwrites).values({
+      ...data,
+      targetType: Number(data.targetType),
+    });
   },
   async findMemberRolesWithPermissions(userId: string, guildId: string) {
     return db
