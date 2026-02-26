@@ -95,12 +95,21 @@ function setRateLimitHeaders(reply: FastifyReply, config: RateLimitConfig, remai
   reply.header("X-RateLimit-Reset-After", Math.ceil(resetAfter / 1000));
 }
 
+function getClientIp(request: FastifyRequest): string {
+  const forwarded = request.headers["x-forwarded-for"];
+  if (forwarded) {
+    const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded).split(",")[0]!.trim();
+    if (first) return first;
+  }
+  return request.ip;
+}
+
 export function createRateLimiter(bucket: keyof typeof DEFAULTS) {
   const config = DEFAULTS[bucket]!;
 
   return async function rateLimitMiddleware(request: FastifyRequest, reply: FastifyReply) {
-    // Use userId if authed, otherwise IP
-    const identifier = (request as any).userId ?? request.ip;
+    // Use userId if authed, otherwise real client IP (respecting X-Forwarded-For)
+    const identifier = (request as any).userId ?? getClientIp(request);
     const result = await checkRateLimit(identifier, config);
 
     setRateLimitHeaders(reply, config, result.remaining, result.resetAfter);
@@ -117,7 +126,7 @@ export function createRateLimiter(bucket: keyof typeof DEFAULTS) {
  */
 export async function globalRateLimit(request: FastifyRequest, reply: FastifyReply) {
   const config = DEFAULTS.global!;
-  const identifier = (request as any).userId ?? request.ip;
+  const identifier = (request as any).userId ?? getClientIp(request);
   const result = await checkRateLimit(identifier, config);
 
   setRateLimitHeaders(reply, config, result.remaining, result.resetAfter);

@@ -28,7 +28,10 @@ const HEARTBEAT_INTERVAL = 41250; // ~41s
 const PRESENCE_TTL = 300; // 5 minutes
 const SESSION_TTL = Math.ceil(HEARTBEAT_INTERVAL / 1000) + 30; // heartbeat interval + buffer
 const RESUME_WINDOW = 300; // 5 minutes
-const RESUME_BUFFER_MAX = 500;
+const RESUME_BUFFER_MAX = 250;
+const RESUME_BUFFER_TTL = 300; // 5 minutes
+const RESUME_CIRCUIT_BREAKER_THRESHOLD = 100_000;
+const MAX_LOCAL_SESSIONS = 500_000;
 
 interface GatewaySession {
   userId: string;
@@ -175,10 +178,14 @@ async function refreshSessionTTL(socketId: string) {
 // ── Resume buffer in Redis ──
 
 async function pushResumeEvent(sessionId: string, payload: GatewayPayload) {
+  // Circuit breaker: if too many resume keys in Redis, skip storing
+  const resumeKeyCount = await redis.dbsize();
+  if (resumeKeyCount > RESUME_CIRCUIT_BREAKER_THRESHOLD) return;
+
   const key = `resume:${sessionId}`;
   await redis.rpush(key, JSON.stringify(payload));
   await redis.ltrim(key, -RESUME_BUFFER_MAX, -1);
-  await redis.expire(key, RESUME_WINDOW);
+  await redis.expire(key, RESUME_BUFFER_TTL);
 }
 
 async function getResumeEvents(sessionId: string, afterSeq: number): Promise<GatewayPayload[]> {
@@ -228,11 +235,21 @@ export function createGateway(httpServer: HttpServer) {
   // Redis adapter for horizontal scaling
   io.adapter(createAdapter(redisPub, redisSub));
 
-  // Cleanup stale localSessions entries every 60s
+  // Cleanup stale localSessions entries and expired rate limit buckets every 60s
   setInterval(() => {
-    for (const socketId of localSessions.keys()) {
+    const now = Date.now();
+    for (const [socketId, sess] of localSessions) {
       if (!io.sockets.sockets.has(socketId)) {
         localSessions.delete(socketId);
+      } else {
+        // Purge rate limit entries older than 120s to prevent unbounded growth
+        for (const op of Object.keys(sess.rateLimits)) {
+          const opNum = Number(op);
+          const bucket = sess.rateLimits[opNum];
+          if (bucket && now - bucket.windowStart > 120_000) {
+            delete sess.rateLimits[opNum];
+          }
+        }
       }
     }
   }, 60_000);
@@ -426,6 +443,16 @@ export function createGateway(httpServer: HttpServer) {
       socket: ReturnType<typeof io.sockets.sockets.get> extends infer S ? NonNullable<S> : never,
       data: IdentifyPayload
     ) {
+      // Reject new sessions if this instance is at capacity
+      if (localSessions.size >= MAX_LOCAL_SESSIONS) {
+        socket.emit("message", {
+          op: GatewayOp.INVALID_SESSION,
+          d: { message: "Server at capacity, please retry later" },
+        });
+        socket.disconnect(true);
+        return;
+      }
+
       const tokenPayload = verifyToken(data.token);
       const user = await getUserById(tokenPayload.userId);
       if (!user) {
