@@ -3,9 +3,9 @@ import { env } from "./env.js";
 
 export const redis = new Redis(env.REDIS_URL, {
   maxRetriesPerRequest: 3,
+  enableAutoPipelining: true,
   retryStrategy(times) {
-    const delay = Math.min(times * 50, 2000);
-    return delay;
+    return Math.min(times * 50, 2000);
   },
 });
 
@@ -16,4 +16,5 @@ export const redisSub = new Redis(env.REDIS_URL, {
 
 export const redisPub = new Redis(env.REDIS_URL, {
   maxRetriesPerRequest: 3,
+  enableAutoPipelining: true,
 });

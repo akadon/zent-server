@@ -1,7 +1,6 @@
-import { eq, and, sql, inArray } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
+import { pollRepository } from "../repositories/poll.repository.js";
 
 export async function createPoll(
   channelId: string,
@@ -15,8 +14,8 @@ export async function createPoll(
     ? new Date(Date.now() + opts.duration * 1000)
     : null;
 
-  await db.transaction(async (tx) => {
-    await tx.insert(schema.polls).values({
+  await pollRepository.createWithOptions(
+    {
       id: pollId,
       channelId,
       messageId,
@@ -24,39 +23,21 @@ export async function createPoll(
       allowMultiselect: opts?.allowMultiselect ?? false,
       anonymous: opts?.anonymous ?? false,
       expiresAt,
-    });
-
-    for (let i = 0; i < options.length; i++) {
-      await tx.insert(schema.pollOptions).values({
-        id: generateSnowflake(),
-        pollId,
-        text: options[i]!,
-        position: i,
-      });
-    }
-  });
+    },
+    options,
+  );
 
   return getPoll(pollId);
 }
 
 export async function getPoll(pollId: string, userId?: string) {
-  const [poll] = await db
-    .select()
-    .from(schema.polls)
-    .where(eq(schema.polls.id, pollId))
-    .limit(1);
-
+  const poll = await pollRepository.findById(pollId);
   if (!poll) return null;
 
-  const options = await db
-    .select()
-    .from(schema.pollOptions)
-    .where(eq(schema.pollOptions.pollId, pollId));
-
-  const votes = await db
-    .select()
-    .from(schema.pollVotes)
-    .where(eq(schema.pollVotes.pollId, pollId));
+  const [options, votes] = await Promise.all([
+    pollRepository.findOptions(pollId),
+    pollRepository.findVotesByPollId(pollId),
+  ]);
 
   const totalVotes = new Set(votes.map((v) => v.userId)).size;
 
@@ -83,12 +64,7 @@ export async function getPoll(pollId: string, userId?: string) {
 }
 
 export async function getPollByMessageId(messageId: string, userId?: string) {
-  const [poll] = await db
-    .select()
-    .from(schema.polls)
-    .where(eq(schema.polls.messageId, messageId))
-    .limit(1);
-
+  const poll = await pollRepository.findByMessageId(messageId);
   if (!poll) return null;
   return getPoll(poll.id, userId);
 }
@@ -103,8 +79,8 @@ export async function getBatchPolls(
   const pollIds = polls.map((p) => p.id);
 
   const [allOptions, allVotes] = await Promise.all([
-    db.select().from(schema.pollOptions).where(inArray(schema.pollOptions.pollId, pollIds)),
-    db.select().from(schema.pollVotes).where(inArray(schema.pollVotes.pollId, pollIds)),
+    pollRepository.findOptionsByPollIds(pollIds),
+    pollRepository.findVotesByPollIds(pollIds),
   ]);
 
   const optionsByPoll = new Map<string, typeof allOptions>();
@@ -152,88 +128,44 @@ export async function getBatchPolls(
 }
 
 export async function votePoll(pollId: string, optionId: string, userId: string) {
-  const [poll] = await db
-    .select()
-    .from(schema.polls)
-    .where(eq(schema.polls.id, pollId))
-    .limit(1);
-
+  const poll = await pollRepository.findById(pollId);
   if (!poll) throw new ApiError(404, "Poll not found");
   if (poll.expiresAt && poll.expiresAt < new Date()) {
     throw new ApiError(400, "Poll has ended");
   }
 
   // Check if option belongs to this poll
-  const [option] = await db
-    .select()
-    .from(schema.pollOptions)
-    .where(and(eq(schema.pollOptions.id, optionId), eq(schema.pollOptions.pollId, pollId)))
-    .limit(1);
-
+  const option = await pollRepository.findOption(pollId, optionId);
   if (!option) throw new ApiError(404, "Option not found");
 
   // If not multiselect, remove existing vote first
   if (!poll.allowMultiselect) {
-    await db
-      .delete(schema.pollVotes)
-      .where(and(eq(schema.pollVotes.pollId, pollId), eq(schema.pollVotes.userId, userId)));
+    await pollRepository.deleteVotesByUser(pollId, userId);
   }
 
   // Check for duplicate vote on same option
-  const [existing] = await db
-    .select()
-    .from(schema.pollVotes)
-    .where(
-      and(
-        eq(schema.pollVotes.pollId, pollId),
-        eq(schema.pollVotes.optionId, optionId),
-        eq(schema.pollVotes.userId, userId)
-      )
-    )
-    .limit(1);
-
+  const existing = await pollRepository.findVote(pollId, optionId, userId);
   if (existing) throw new ApiError(400, "Already voted for this option");
 
-  await db.insert(schema.pollVotes).values({ pollId, optionId, userId });
+  await pollRepository.createVote(pollId, optionId, userId);
 
   return { pollId, optionId, userId, channelId: poll.channelId, messageId: poll.messageId };
 }
 
 export async function removePollVote(pollId: string, optionId: string, userId: string) {
-  const [poll] = await db
-    .select()
-    .from(schema.polls)
-    .where(eq(schema.polls.id, pollId))
-    .limit(1);
-
+  const poll = await pollRepository.findById(pollId);
   if (!poll) throw new ApiError(404, "Poll not found");
 
-  await db
-    .delete(schema.pollVotes)
-    .where(
-      and(
-        eq(schema.pollVotes.pollId, pollId),
-        eq(schema.pollVotes.optionId, optionId),
-        eq(schema.pollVotes.userId, userId)
-      )
-    );
+  await pollRepository.deleteVote(pollId, optionId, userId);
 
   return { pollId, optionId, userId, channelId: poll.channelId, messageId: poll.messageId };
 }
 
 export async function endPoll(pollId: string, userId: string) {
-  const [poll] = await db
-    .select()
-    .from(schema.polls)
-    .where(eq(schema.polls.id, pollId))
-    .limit(1);
-
+  const poll = await pollRepository.findById(pollId);
   if (!poll) throw new ApiError(404, "Poll not found");
 
-  await db
-    .update(schema.polls)
-    .set({ expiresAt: new Date() })
-    .where(eq(schema.polls.id, pollId));
+  await pollRepository.setExpired(pollId);
 
   return getPoll(pollId, userId);
 }

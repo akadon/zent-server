@@ -1,114 +1,13 @@
-import { eq, and, lt, desc, inArray, count } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
 import * as pollService from "./poll.service.js";
 import * as permissionService from "./permission.service.js";
 import { PermissionFlags } from "@yxc/permissions";
-
-// ── Reaction aggregation helpers ──
-
-interface AggregatedReaction {
-  emoji: { id: string | null; name: string };
-  count: number;
-  me: boolean;
-}
-
-async function getMessageReactions(messageId: string, currentUserId?: string): Promise<AggregatedReaction[]> {
-  const rows = await db
-    .select({
-      emojiName: schema.messageReactions.emojiName,
-      emojiId: schema.messageReactions.emojiId,
-      count: count(),
-    })
-    .from(schema.messageReactions)
-    .where(eq(schema.messageReactions.messageId, messageId))
-    .groupBy(schema.messageReactions.emojiName, schema.messageReactions.emojiId);
-
-  if (rows.length === 0) return [];
-
-  let myReactions = new Set<string>();
-  if (currentUserId) {
-    const myRows = await db
-      .select({
-        emojiName: schema.messageReactions.emojiName,
-        emojiId: schema.messageReactions.emojiId,
-      })
-      .from(schema.messageReactions)
-      .where(
-        and(
-          eq(schema.messageReactions.messageId, messageId),
-          eq(schema.messageReactions.userId, currentUserId)
-        )
-      );
-    for (const r of myRows) {
-      myReactions.add(`${r.emojiName}:${r.emojiId ?? ""}`);
-    }
-  }
-
-  return rows.map((r) => ({
-    emoji: { id: r.emojiId ?? null, name: r.emojiName },
-    count: r.count,
-    me: myReactions.has(`${r.emojiName}:${r.emojiId ?? ""}`),
-  }));
-}
-
-async function getBatchMessageReactions(
-  messageIds: string[],
-  currentUserId?: string
-): Promise<Map<string, AggregatedReaction[]>> {
-  const result = new Map<string, AggregatedReaction[]>();
-  if (messageIds.length === 0) return result;
-
-  const rows = await db
-    .select({
-      messageId: schema.messageReactions.messageId,
-      emojiName: schema.messageReactions.emojiName,
-      emojiId: schema.messageReactions.emojiId,
-      count: count(),
-    })
-    .from(schema.messageReactions)
-    .where(inArray(schema.messageReactions.messageId, messageIds))
-    .groupBy(
-      schema.messageReactions.messageId,
-      schema.messageReactions.emojiName,
-      schema.messageReactions.emojiId
-    );
-
-  if (rows.length === 0) return result;
-
-  let myReactions = new Set<string>();
-  if (currentUserId) {
-    const myRows = await db
-      .select({
-        messageId: schema.messageReactions.messageId,
-        emojiName: schema.messageReactions.emojiName,
-        emojiId: schema.messageReactions.emojiId,
-      })
-      .from(schema.messageReactions)
-      .where(
-        and(
-          inArray(schema.messageReactions.messageId, messageIds),
-          eq(schema.messageReactions.userId, currentUserId)
-        )
-      );
-    for (const r of myRows) {
-      myReactions.add(`${r.messageId}:${r.emojiName}:${r.emojiId ?? ""}`);
-    }
-  }
-
-  for (const r of rows) {
-    const list = result.get(r.messageId) ?? [];
-    list.push({
-      emoji: { id: r.emojiId ?? null, name: r.emojiName },
-      count: r.count,
-      me: myReactions.has(`${r.messageId}:${r.emojiName}:${r.emojiId ?? ""}`),
-    });
-    result.set(r.messageId, list);
-  }
-
-  return result;
-}
+import { messageRepository } from "../repositories/message.repository.js";
+import { userRepository } from "../repositories/user.repository.js";
+import { channelRepository } from "../repositories/channel.repository.js";
+import { reactionRepository } from "../repositories/reaction.repository.js";
+import { pollRepository } from "../repositories/poll.repository.js";
 
 export async function createMessage(
   channelId: string,
@@ -129,9 +28,18 @@ export async function createMessage(
   const mentionEveryone = content.includes("@everyone") || content.includes("@here");
   const createdAt = new Date();
 
-  // Insert message and update channel concurrently, also fetch channel for retention
-  const [, , [author], [channel]] = await Promise.all([
-    db.insert(schema.messages).values({
+  // Fetch author + channel first, then write message with embedded snapshot
+  const [author, channel] = await Promise.all([
+    userRepository.findPublicById(authorId),
+    channelRepository.findById(channelId),
+  ]);
+
+  const authorSnapshot = author
+    ? { id: author.id, username: author.username, displayName: author.displayName, avatar: author.avatar }
+    : { id: authorId, username: "Deleted User", displayName: null, avatar: null };
+
+  await Promise.all([
+    messageRepository.create({
       id,
       channelId,
       authorId,
@@ -142,25 +50,15 @@ export async function createMessage(
       referencedMessageId,
       mentionEveryone,
       createdAt,
+      authorSnapshot,
     }),
-    db.update(schema.channels).set({ lastMessageId: id }).where(eq(schema.channels.id, channelId)),
-    db.select({
-      id: schema.users.id,
-      username: schema.users.username,
-      displayName: schema.users.displayName,
-      avatar: schema.users.avatar,
-      status: schema.users.status,
-    }).from(schema.users).where(eq(schema.users.id, authorId)).limit(1),
-    db.select({ messageRetentionSeconds: schema.channels.messageRetentionSeconds })
-      .from(schema.channels)
-      .where(eq(schema.channels.id, channelId))
-      .limit(1),
+    messageRepository.updateLastMessageId(channelId, id),
   ]);
 
   // Set message expiry based on channel retention policy
   if (channel?.messageRetentionSeconds) {
     const expiresAt = new Date(Date.now() + channel.messageRetentionSeconds * 1000);
-    await db.update(schema.messages).set({ expiresAt }).where(eq(schema.messages.id, id));
+    await messageRepository.update(id, { expiresAt });
   }
 
   const resolvedAuthor = author ?? {
@@ -199,31 +97,14 @@ export async function createMessage(
 }
 
 export async function getMessageWithAuthor(messageId: string, depth: number = 0, currentUserId?: string): Promise<Record<string, any> | null> {
-  const [message] = await db
-    .select()
-    .from(schema.messages)
-    .where(eq(schema.messages.id, messageId))
-    .limit(1);
+  const message = await messageRepository.findById(messageId);
 
   if (!message) return null;
 
-  const [[author], attachments, reactions, poll] = await Promise.all([
-    db
-      .select({
-        id: schema.users.id,
-        username: schema.users.username,
-        displayName: schema.users.displayName,
-        avatar: schema.users.avatar,
-        status: schema.users.status,
-      })
-      .from(schema.users)
-      .where(eq(schema.users.id, message.authorId))
-      .limit(1),
-    db
-      .select()
-      .from(schema.messageAttachments)
-      .where(eq(schema.messageAttachments.messageId, messageId)),
-    getMessageReactions(messageId, currentUserId),
+  const [author, attachments, reactions, poll] = await Promise.all([
+    userRepository.findPublicById(message.authorId),
+    messageRepository.findAttachmentsByMessageIds([messageId]),
+    reactionRepository.getAggregated(messageId, currentUserId),
     pollService.getPollByMessageId(messageId, currentUserId),
   ]);
 
@@ -270,44 +151,18 @@ export async function getChannelMessages(
 ) {
   const limitNum = Math.min(options?.limit ?? 50, 100);
 
-  const rows = await db
-    .select({
-      message: schema.messages,
-      author: {
-        id: schema.users.id,
-        username: schema.users.username,
-        displayName: schema.users.displayName,
-        avatar: schema.users.avatar,
-        status: schema.users.status,
-      },
-    })
-    .from(schema.messages)
-    .leftJoin(schema.users, eq(schema.messages.authorId, schema.users.id))
-    .where(
-      options?.before
-        ? and(
-            eq(schema.messages.channelId, channelId),
-            lt(schema.messages.id, options.before)
-          )
-        : eq(schema.messages.channelId, channelId)
-    )
-    .orderBy(desc(schema.messages.id))
-    .limit(limitNum);
+  // Primary path: no JOIN, uses embedded authorSnapshot (NoSQL-ready)
+  const messages = await messageRepository.findByChannelId(channelId, { before: options?.before, limit: limitNum });
 
-  if (rows.length === 0) return [];
+  if (messages.length === 0) return [];
 
-  // Batch fetch attachments, reactions, and polls for all messages
-  const messageIds = rows.map((r) => r.message.id);
+  const messageIds = messages.map((m) => m.id);
+
+  // Batch fetch attachments, reactions, polls (3 queries total, not N)
   const [allAttachments, reactionsByMessage, allPolls] = await Promise.all([
-    db
-      .select()
-      .from(schema.messageAttachments)
-      .where(inArray(schema.messageAttachments.messageId, messageIds)),
-    getBatchMessageReactions(messageIds, currentUserId),
-    db
-      .select()
-      .from(schema.polls)
-      .where(inArray(schema.polls.messageId, messageIds)),
+    messageRepository.findAttachmentsByMessageIds(messageIds),
+    reactionRepository.getBatchAggregated(messageIds, currentUserId),
+    pollRepository.findByMessageIds(messageIds),
   ]);
 
   const attachmentsByMessage = new Map<string, typeof allAttachments>();
@@ -317,95 +172,61 @@ export async function getChannelMessages(
     attachmentsByMessage.set(att.messageId, list);
   }
 
-  // Batch fetch poll details (options + votes in 2 queries instead of N)
   const pollsByMessage = allPolls.length > 0
     ? await pollService.getBatchPolls(allPolls, currentUserId)
     : new Map<string, Record<string, any>>();
 
-  // Batch fetch referenced messages (one level only)
-  const refIds = rows
-    .map((r) => r.message.referencedMessageId)
+  // Batch fetch referenced messages (one level only, uses snapshot too)
+  const refIds = messages
+    .map((m) => m.referencedMessageId)
     .filter((id): id is string => id !== null);
 
   const referencedMessages = new Map<string, Record<string, any>>();
   if (refIds.length > 0) {
-    const refRows = await db
-      .select({
-        message: schema.messages,
-        author: {
-          id: schema.users.id,
-          username: schema.users.username,
-          displayName: schema.users.displayName,
-          avatar: schema.users.avatar,
-          status: schema.users.status,
-        },
-      })
-      .from(schema.messages)
-      .leftJoin(schema.users, eq(schema.messages.authorId, schema.users.id))
-      .where(inArray(schema.messages.id, refIds));
-
+    const refRows = await messageRepository.findByIdsWithAuthor(refIds);
     for (const ref of refRows) {
-      const refAuthor = ref.author ?? {
-        id: ref.message.authorId,
-        username: "Deleted User",
-        displayName: null,
-        avatar: null,
-        status: "offline",
+      const refAuthor = (ref.message.authorSnapshot as any) ?? ref.author ?? {
+        id: ref.message.authorId, username: "Deleted User", displayName: null, avatar: null, status: "offline",
       };
       referencedMessages.set(ref.message.id, {
-        id: ref.message.id,
-        channelId: ref.message.channelId,
-        author: refAuthor,
-        content: ref.message.content,
-        type: ref.message.type,
-        flags: ref.message.flags,
-        tts: ref.message.tts,
-        mentionEveryone: ref.message.mentionEveryone,
-        pinned: ref.message.pinned,
-        editedTimestamp: ref.message.editedTimestamp?.toISOString() ?? null,
-        referencedMessageId: ref.message.referencedMessageId,
-        referencedMessage: null,
-        webhookId: ref.message.webhookId,
-        attachments: [],
-        embeds: [],
-        reactions: [],
+        id: ref.message.id, channelId: ref.message.channelId, author: refAuthor,
+        content: ref.message.content, type: ref.message.type, flags: ref.message.flags,
+        tts: ref.message.tts, mentionEveryone: ref.message.mentionEveryone,
+        pinned: ref.message.pinned, editedTimestamp: ref.message.editedTimestamp?.toISOString() ?? null,
+        referencedMessageId: ref.message.referencedMessageId, referencedMessage: null,
+        webhookId: ref.message.webhookId, attachments: [], embeds: [], reactions: [],
         createdAt: ref.message.createdAt.toISOString(),
       });
     }
   }
 
-  return rows.map((row) => {
-    const author = row.author ?? {
-      id: row.message.authorId,
-      username: "Deleted User",
-      displayName: null,
-      avatar: null,
-      status: "offline",
+  return messages.map((msg) => {
+    // Prefer embedded snapshot; fall back to authorId-based stub for old messages
+    const author = (msg.authorSnapshot as any) ?? {
+      id: msg.authorId, username: "Deleted User", displayName: null, avatar: null, status: "offline",
     };
 
-    const poll = pollsByMessage.get(row.message.id);
-
     return {
-      id: row.message.id,
-      channelId: row.message.channelId,
+      id: msg.id,
+      channelId: msg.channelId,
       author,
-      content: row.message.content,
-      type: row.message.type,
-      flags: row.message.flags,
-      tts: row.message.tts,
-      mentionEveryone: row.message.mentionEveryone,
-      pinned: row.message.pinned,
-      editedTimestamp: row.message.editedTimestamp?.toISOString() ?? null,
-      referencedMessageId: row.message.referencedMessageId,
-      referencedMessage: row.message.referencedMessageId
-        ? referencedMessages.get(row.message.referencedMessageId) ?? null
+      content: msg.content,
+      type: msg.type,
+      flags: msg.flags,
+      tts: msg.tts,
+      mentionEveryone: msg.mentionEveryone,
+      pinned: msg.pinned,
+      editedTimestamp: msg.editedTimestamp?.toISOString() ?? null,
+      referencedMessageId: msg.referencedMessageId,
+      referencedMessage: msg.referencedMessageId
+        ? referencedMessages.get(msg.referencedMessageId) ?? null
         : null,
-      webhookId: row.message.webhookId,
-      attachments: attachmentsByMessage.get(row.message.id) ?? [],
+      webhookId: msg.webhookId,
+      attachments: attachmentsByMessage.get(msg.id) ?? [],
       embeds: [],
-      reactions: reactionsByMessage.get(row.message.id) ?? [],
-      poll: poll ?? undefined,
-      createdAt: row.message.createdAt.toISOString(),
+      reactions: reactionsByMessage.get(msg.id) ?? [],
+      poll: pollsByMessage.get(msg.id) ?? undefined,
+      createdAt: msg.createdAt.toISOString(),
     };
   });
 }
@@ -415,45 +236,27 @@ export async function updateMessage(
   userId: string,
   content: string
 ) {
-  const [message] = await db
-    .select({ authorId: schema.messages.authorId })
-    .from(schema.messages)
-    .where(eq(schema.messages.id, messageId))
-    .limit(1);
+  const message = await messageRepository.findById(messageId);
 
   if (!message) throw new ApiError(404, "Message not found");
   if (message.authorId !== userId) throw new ApiError(403, "Cannot edit another user's message");
 
-  await db
-    .update(schema.messages)
-    .set({
-      content,
-      editedTimestamp: new Date(),
-    })
-    .where(eq(schema.messages.id, messageId));
+  await messageRepository.update(messageId, {
+    content,
+    editedTimestamp: new Date(),
+  });
 
   return getMessageWithAuthor(messageId);
 }
 
 export async function deleteMessage(messageId: string, userId: string) {
-  const [message] = await db
-    .select({
-      authorId: schema.messages.authorId,
-      channelId: schema.messages.channelId,
-    })
-    .from(schema.messages)
-    .where(eq(schema.messages.id, messageId))
-    .limit(1);
+  const message = await messageRepository.findById(messageId);
 
   if (!message) throw new ApiError(404, "Message not found");
 
   if (message.authorId !== userId) {
     // Check if user has MANAGE_MESSAGES in this channel's guild
-    const [channel] = await db
-      .select({ guildId: schema.channels.guildId })
-      .from(schema.channels)
-      .where(eq(schema.channels.id, message.channelId))
-      .limit(1);
+    const channel = await channelRepository.findById(message.channelId);
 
     if (!channel?.guildId) {
       throw new ApiError(403, "Cannot delete another user's message");
@@ -462,57 +265,29 @@ export async function deleteMessage(messageId: string, userId: string) {
     await permissionService.requireGuildPermission(userId, channel.guildId, PermissionFlags.MANAGE_MESSAGES);
   }
 
-  await db.delete(schema.messages).where(eq(schema.messages.id, messageId));
+  await messageRepository.delete(messageId);
 
   return { id: messageId, channelId: message.channelId };
 }
 
 export async function pinMessage(messageId: string) {
-  await db
-    .update(schema.messages)
-    .set({ pinned: true })
-    .where(eq(schema.messages.id, messageId));
+  await messageRepository.setPin(messageId, true);
 }
 
 export async function unpinMessage(messageId: string) {
-  await db
-    .update(schema.messages)
-    .set({ pinned: false })
-    .where(eq(schema.messages.id, messageId));
+  await messageRepository.setPin(messageId, false);
 }
 
 export async function getPinnedMessages(channelId: string, currentUserId?: string) {
-  const rows = await db
-    .select({
-      message: schema.messages,
-      author: {
-        id: schema.users.id,
-        username: schema.users.username,
-        displayName: schema.users.displayName,
-        avatar: schema.users.avatar,
-        status: schema.users.status,
-      },
-    })
-    .from(schema.messages)
-    .leftJoin(schema.users, eq(schema.messages.authorId, schema.users.id))
-    .where(and(eq(schema.messages.channelId, channelId), eq(schema.messages.pinned, true)))
-    .orderBy(desc(schema.messages.id))
-    .limit(50);
+  const messages = await messageRepository.findPinned(channelId);
 
-  if (rows.length === 0) return [];
+  if (messages.length === 0) return [];
 
-  // Batch fetch attachments, reactions, and polls for all pinned messages
-  const messageIds = rows.map((r) => r.message.id);
+  const messageIds = messages.map((m) => m.id);
   const [allAttachments, reactionsByMessage, allPolls] = await Promise.all([
-    db
-      .select()
-      .from(schema.messageAttachments)
-      .where(inArray(schema.messageAttachments.messageId, messageIds)),
-    getBatchMessageReactions(messageIds, currentUserId),
-    db
-      .select()
-      .from(schema.polls)
-      .where(inArray(schema.polls.messageId, messageIds)),
+    messageRepository.findAttachmentsByMessageIds(messageIds),
+    reactionRepository.getBatchAggregated(messageIds, currentUserId),
+    pollRepository.findByMessageIds(messageIds),
   ]);
 
   const attachmentsByMessage = new Map<string, typeof allAttachments>();
@@ -522,95 +297,48 @@ export async function getPinnedMessages(channelId: string, currentUserId?: strin
     attachmentsByMessage.set(att.messageId, list);
   }
 
-  // Batch fetch poll details (options + votes in 2 queries instead of N)
   const pollsByMessage = allPolls.length > 0
     ? await pollService.getBatchPolls(allPolls, currentUserId)
     : new Map<string, Record<string, any>>();
 
-  // Batch fetch referenced messages (one level only)
-  const refIds = rows
-    .map((r) => r.message.referencedMessageId)
-    .filter((id): id is string => id !== null);
-
+  const refIds = messages.map((m) => m.referencedMessageId).filter((id): id is string => id !== null);
   const referencedMessages = new Map<string, Record<string, any>>();
   if (refIds.length > 0) {
-    const refRows = await db
-      .select({
-        message: schema.messages,
-        author: {
-          id: schema.users.id,
-          username: schema.users.username,
-          displayName: schema.users.displayName,
-          avatar: schema.users.avatar,
-          status: schema.users.status,
-        },
-      })
-      .from(schema.messages)
-      .leftJoin(schema.users, eq(schema.messages.authorId, schema.users.id))
-      .where(inArray(schema.messages.id, refIds));
-
+    const refRows = await messageRepository.findByIdsWithAuthor(refIds);
     for (const ref of refRows) {
-      const refAuthor = ref.author ?? {
-        id: ref.message.authorId,
-        username: "Deleted User",
-        displayName: null,
-        avatar: null,
-        status: "offline",
+      const refAuthor = (ref.message.authorSnapshot as any) ?? ref.author ?? {
+        id: ref.message.authorId, username: "Deleted User", displayName: null, avatar: null, status: "offline",
       };
       referencedMessages.set(ref.message.id, {
-        id: ref.message.id,
-        channelId: ref.message.channelId,
-        author: refAuthor,
-        content: ref.message.content,
-        type: ref.message.type,
-        flags: ref.message.flags,
-        tts: ref.message.tts,
-        mentionEveryone: ref.message.mentionEveryone,
-        pinned: ref.message.pinned,
-        editedTimestamp: ref.message.editedTimestamp?.toISOString() ?? null,
-        referencedMessageId: ref.message.referencedMessageId,
-        referencedMessage: null,
-        webhookId: ref.message.webhookId,
-        attachments: [],
-        embeds: [],
-        reactions: [],
+        id: ref.message.id, channelId: ref.message.channelId, author: refAuthor,
+        content: ref.message.content, type: ref.message.type, flags: ref.message.flags,
+        tts: ref.message.tts, mentionEveryone: ref.message.mentionEveryone,
+        pinned: ref.message.pinned, editedTimestamp: ref.message.editedTimestamp?.toISOString() ?? null,
+        referencedMessageId: ref.message.referencedMessageId, referencedMessage: null,
+        webhookId: ref.message.webhookId, attachments: [], embeds: [], reactions: [],
         createdAt: ref.message.createdAt.toISOString(),
       });
     }
   }
 
-  return rows.map((row) => {
-    const author = row.author ?? {
-      id: row.message.authorId,
-      username: "Deleted User",
-      displayName: null,
-      avatar: null,
-      status: "offline",
+  return messages.map((msg) => {
+    const author = (msg.authorSnapshot as any) ?? {
+      id: msg.authorId, username: "Deleted User", displayName: null, avatar: null, status: "offline",
     };
 
-    const poll = pollsByMessage.get(row.message.id);
-
     return {
-      id: row.message.id,
-      channelId: row.message.channelId,
-      author,
-      content: row.message.content,
-      type: row.message.type,
-      flags: row.message.flags,
-      tts: row.message.tts,
-      mentionEveryone: row.message.mentionEveryone,
-      pinned: row.message.pinned,
-      editedTimestamp: row.message.editedTimestamp?.toISOString() ?? null,
-      referencedMessageId: row.message.referencedMessageId,
-      referencedMessage: row.message.referencedMessageId
-        ? referencedMessages.get(row.message.referencedMessageId) ?? null
-        : null,
-      webhookId: row.message.webhookId,
-      attachments: attachmentsByMessage.get(row.message.id) ?? [],
+      id: msg.id, channelId: msg.channelId, author,
+      content: msg.content, type: msg.type, flags: msg.flags, tts: msg.tts,
+      mentionEveryone: msg.mentionEveryone, pinned: msg.pinned,
+      editedTimestamp: msg.editedTimestamp?.toISOString() ?? null,
+      referencedMessageId: msg.referencedMessageId,
+      referencedMessage: msg.referencedMessageId ? referencedMessages.get(msg.referencedMessageId) ?? null : null,
+      webhookId: msg.webhookId,
+      attachments: attachmentsByMessage.get(msg.id) ?? [],
       embeds: [],
-      reactions: reactionsByMessage.get(row.message.id) ?? [],
-      poll: poll ?? undefined,
-      createdAt: row.message.createdAt.toISOString(),
+      reactions: reactionsByMessage.get(msg.id) ?? [],
+      poll: pollsByMessage.get(msg.id) ?? undefined,
+      createdAt: msg.createdAt.toISOString(),
     };
   });
 }

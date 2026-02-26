@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { db } from "../../db/index.js";
-import { channels, messages, guilds, members } from "../../db/schema.js";
-import { eq, and, desc, count } from "drizzle-orm";
 import { ApiError } from "../../services/auth.service.js";
+import { channelRepository } from "../../repositories/channel.repository.js";
+import { guildRepository } from "../../repositories/guild.repository.js";
+import { messageRepository } from "../../repositories/message.repository.js";
 
 // In-memory set of public channel IDs. Resets on server restart — not persisted to DB.
 const publicChannelIds = new Set<string>();
@@ -29,30 +29,16 @@ export async function publicRoutes(app: FastifyInstance) {
       throw new ApiError(404, "Channel not found or not public");
     }
 
-    const [channel] = await db
-      .select()
-      .from(channels)
-      .where(eq(channels.id, channelId))
-      .limit(1);
-
+    const channel = await channelRepository.findById(channelId);
     if (!channel) {
       throw new ApiError(404, "Channel not found");
     }
 
-    const recentMessages = await db
-      .select()
-      .from(messages)
-      .where(eq(messages.channelId, channelId))
-      .orderBy(desc(messages.id))
-      .limit(50);
+    const recentMessages = await messageRepository.findByChannelId(channelId, { limit: 50 });
 
     let guild = null;
     if (channel.guildId) {
-      const [g] = await db
-        .select()
-        .from(guilds)
-        .where(eq(guilds.id, channel.guildId))
-        .limit(1);
+      const g = await guildRepository.findById(channel.guildId);
       guild = g
         ? {
             id: g.id,
@@ -90,20 +76,12 @@ export async function publicRoutes(app: FastifyInstance) {
       throw new ApiError(404, "Guild not found or not discoverable");
     }
 
-    const [guild] = await db
-      .select()
-      .from(guilds)
-      .where(eq(guilds.id, guildId))
-      .limit(1);
-
+    const guild = await guildRepository.findById(guildId);
     if (!guild) {
       throw new ApiError(404, "Guild not found");
     }
 
-    const [memberCount] = await db
-      .select({ count: count() })
-      .from(members)
-      .where(eq(members.guildId, guildId));
+    const memberCount = await guildRepository.getMemberCount(guildId);
 
     return reply.send({
       id: guild.id,
@@ -111,7 +89,7 @@ export async function publicRoutes(app: FastifyInstance) {
       description: guild.description,
       icon: guild.icon,
       banner: guild.banner,
-      memberCount: memberCount?.count ?? 0,
+      memberCount,
       features: guild.features,
     });
   });

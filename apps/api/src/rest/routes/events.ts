@@ -2,17 +2,13 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { authMiddleware } from "../../middleware/auth.js";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
-import { db, schema } from "../../db/index.js";
-import { and, eq, inArray } from "drizzle-orm";
 import { ApiError } from "../../services/auth.service.js";
 import * as eventService from "../../services/event.service.js";
+import { memberRepository } from "../../repositories/member.repository.js";
+import { eventRepository } from "../../repositories/event.repository.js";
 
 async function requireMembership(userId: string, guildId: string) {
-  const [member] = await db
-    .select()
-    .from(schema.members)
-    .where(and(eq(schema.members.userId, userId), eq(schema.members.guildId, guildId)))
-    .limit(1);
+  const member = await memberRepository.findByUserAndGuild(userId, guildId);
   if (!member) {
     throw new ApiError(403, "You are not a member of this guild");
   }
@@ -280,10 +276,7 @@ export async function eventRoutes(app: FastifyInstance) {
     const eventIds = events.map((e) => e.id);
     let interestedByEvent = new Map<string, string[]>();
     if (eventIds.length > 0) {
-      const allInterested = await db
-        .select({ eventId: schema.guildEventUsers.eventId, userId: schema.guildEventUsers.userId })
-        .from(schema.guildEventUsers)
-        .where(inArray(schema.guildEventUsers.eventId, eventIds));
+      const allInterested = await eventRepository.findUsersByEventIds(eventIds);
       for (const row of allInterested) {
         const list = interestedByEvent.get(row.eventId) ?? [];
         list.push(row.userId);

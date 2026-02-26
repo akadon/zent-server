@@ -1,9 +1,9 @@
-import { lte, and, eq, isNotNull, inArray, lt } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { redis, redisPub } from "../config/redis.js";
 import * as scheduledMessageService from "../services/scheduled-message.service.js";
 import * as messageService from "../services/message.service.js";
 import * as channelService from "../services/channel.service.js";
+import { messageRepository } from "../repositories/message.repository.js";
+import { channelRepository } from "../repositories/channel.repository.js";
 
 const POD_NAME = process.env.HOSTNAME || "default";
 const LEADER_KEY = "zent:jobs:leader";
@@ -13,17 +13,12 @@ const MAX_RETRY_ATTEMPTS = 3;
 
 let isLeader = false;
 
-/**
- * Try to acquire leadership using Redis SET NX EX (atomic).
- * Only one replica can hold the lock at a time.
- */
 async function tryAcquireLeadership(): Promise<boolean> {
   const result = await redis.set(LEADER_KEY, POD_NAME, "EX", LEADER_TTL, "NX");
   if (result === "OK") {
     isLeader = true;
     return true;
   }
-  // Check if we already hold the lock
   const holder = await redis.get(LEADER_KEY);
   if (holder === POD_NAME) {
     await redis.expire(LEADER_KEY, LEADER_TTL);
@@ -50,21 +45,22 @@ async function processScheduledMessages() {
 
         await scheduledMessageService.markAsSent(scheduled.id);
 
-        // Dispatch to gateway
         const channel = await channelService.getChannel(scheduled.channelId);
         if (channel?.guildId) {
           const guildId = channel.guildId;
-          await redisPub.publish(
-            `gateway:guild:${guildId}`,
-            JSON.stringify({ event: "MESSAGE_CREATE", data: message })
-          );
+          const payload = JSON.stringify({ event: "MESSAGE_CREATE", data: message });
+          const now = Date.now();
+          await Promise.all([
+            redisPub.publish(`gateway:guild:${guildId}`, payload),
+            redisPub.zadd(`guild_events:${guildId}`, now, `${now}:${payload}`),
+            redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", now - 60000),
+          ]);
         }
       } catch (err) {
         console.error(`Failed to send scheduled message ${scheduled.id}:`, err);
-        // Track failure attempts via Redis (avoids schema migration)
         const failKey = `jobs:fail:${scheduled.id}`;
         const attempts = await redis.incr(failKey);
-        await redis.expire(failKey, 86400); // 24h TTL
+        await redis.expire(failKey, 86400);
         if (attempts >= MAX_RETRY_ATTEMPTS) {
           console.error(`Scheduled message ${scheduled.id} failed ${attempts} times, marking as sent to stop retries`);
           await scheduledMessageService.markAsSent(scheduled.id);
@@ -81,44 +77,29 @@ async function processScheduledMessages() {
 async function cleanupExpiredMessages() {
   if (!isLeader) return;
   try {
-    const expired = await db
-      .select({ id: schema.messages.id, channelId: schema.messages.channelId })
-      .from(schema.messages)
-      .where(
-        and(
-          isNotNull(schema.messages.expiresAt),
-          lte(schema.messages.expiresAt, new Date())
-        )
-      )
-      .limit(100);
-
+    const expired = await messageRepository.findExpired(100);
     if (expired.length === 0) return;
 
-    // Batch delete all expired messages in one query
-    await db
-      .delete(schema.messages)
-      .where(inArray(schema.messages.id, expired.map((m) => m.id)));
+    await messageRepository.deleteByIds(expired.map((m) => m.id));
 
-    // Batch fetch unique channels to avoid N+1 queries
+    // Batch fetch channels for guild dispatch
     const uniqueChannelIds = [...new Set(expired.map((m) => m.channelId))];
-    const channels = await db
-      .select({ id: schema.channels.id, guildId: schema.channels.guildId })
-      .from(schema.channels)
-      .where(inArray(schema.channels.id, uniqueChannelIds));
-    const channelMap = new Map(channels.map((c) => [c.id, c.guildId]));
+    const channels = await channelRepository.findByIds(uniqueChannelIds);
+    const channelMap = new Map(channels.map((c: any) => [c.id, c.guildId]));
 
-    // Pipeline all gateway dispatches
+    // Pipeline all gateway dispatches + event log writes
     const pipeline = redisPub.pipeline();
+    const now = Date.now();
     for (const msg of expired) {
       const guildId = channelMap.get(msg.channelId);
       if (guildId) {
-        pipeline.publish(
-          `gateway:guild:${guildId}`,
-          JSON.stringify({
-            event: "MESSAGE_DELETE",
-            data: { id: msg.id, channelId: msg.channelId, guildId },
-          })
-        );
+        const payload = JSON.stringify({
+          event: "MESSAGE_DELETE",
+          data: { id: msg.id, channelId: msg.channelId, guildId },
+        });
+        pipeline.publish(`gateway:guild:${guildId}`, payload);
+        pipeline.zadd(`guild_events:${guildId}`, now, `${now}:${payload}`);
+        pipeline.zremrangebyscore(`guild_events:${guildId}`, "-inf", now - 60000);
       }
     }
     await pipeline.exec();
@@ -130,7 +111,6 @@ async function cleanupExpiredMessages() {
 export function startBackgroundJobs() {
   console.log(`[${POD_NAME}] Starting background jobs with leader election...`);
 
-  // Leader election loop - try to acquire/renew every 10s
   const leaderLoop = async () => {
     const wasLeader = isLeader;
     const acquired = await tryAcquireLeadership();
@@ -141,17 +121,11 @@ export function startBackgroundJobs() {
     }
   };
 
-  // Start leader election immediately, then every 10s
   leaderLoop();
   setInterval(leaderLoop, LEADER_RENEW_INTERVAL);
-
-  // Run scheduled messages check every 10s
   setInterval(processScheduledMessages, 10_000);
-
-  // Run expired message cleanup every 30s
   setInterval(cleanupExpiredMessages, 30_000);
 
-  // Initial run (after a short delay to let leader election happen)
   setTimeout(() => {
     processScheduledMessages();
     cleanupExpiredMessages();

@@ -1,6 +1,5 @@
-import { db, schema } from "../db/index.js";
-import { eq, and } from "drizzle-orm";
 import { generateSnowflake } from "@yxc/snowflake";
+import { messageComponentRepository } from "../repositories/message-component.repository.js";
 
 export interface ComponentData {
   type: number;
@@ -67,7 +66,7 @@ export async function createMessageComponents(
     const rowId = generateSnowflake();
 
     // Insert ActionRow
-    await db.insert(schema.messageComponents).values({
+    await messageComponentRepository.create({
       id: rowId,
       messageId,
       type: ComponentType.ACTION_ROW,
@@ -93,7 +92,7 @@ export async function createMessageComponents(
     for (const [compIndex, comp] of children.entries()) {
       if (!comp) continue;
 
-      await db.insert(schema.messageComponents).values({
+      await messageComponentRepository.create({
         id: generateSnowflake(),
         messageId,
         type: comp.type,
@@ -118,11 +117,7 @@ export async function createMessageComponents(
 }
 
 export async function getMessageComponents(messageId: string): Promise<ComponentData[]> {
-  const rows = await db
-    .select()
-    .from(schema.messageComponents)
-    .where(eq(schema.messageComponents.messageId, messageId))
-    .orderBy(schema.messageComponents.position);
+  const rows = await messageComponentRepository.findByMessageId(messageId);
 
   // Group by parent
   const actionRowsMap = new Map<string, ComponentData>();
@@ -167,9 +162,7 @@ export async function getMessageComponents(messageId: string): Promise<Component
 }
 
 export async function deleteMessageComponents(messageId: string): Promise<void> {
-  await db
-    .delete(schema.messageComponents)
-    .where(eq(schema.messageComponents.messageId, messageId));
+  await messageComponentRepository.deleteByMessageId(messageId);
 }
 
 export async function updateMessageComponents(

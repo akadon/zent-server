@@ -28,10 +28,13 @@ export async function publicWebhookRoutes(app: FastifyInstance) {
 
     const channel = await channelService.getChannel(message.channelId);
     if (channel?.guildId) {
-      await redisPub.publish(
-        `gateway:guild:${channel.guildId}`,
-        JSON.stringify({ event: "MESSAGE_CREATE", data: message })
-      );
+      const payload = JSON.stringify({ event: "MESSAGE_CREATE", data: message });
+      const now = Date.now();
+      await Promise.all([
+        redisPub.publish(`gateway:guild:${channel.guildId}`, payload),
+        redisPub.zadd(`guild_events:${channel.guildId}`, now, `${now}:${payload}`),
+        redisPub.zremrangebyscore(`guild_events:${channel.guildId}`, "-inf", now - 60000),
+      ]);
     }
 
     return reply.status(200).send(message);

@@ -1,12 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { authMiddleware } from "../../middleware/auth.js";
-import { db, schema } from "../../db/index.js";
-import { eq } from "drizzle-orm";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import crypto from "crypto";
 import { ApiError } from "../../services/auth.service.js";
 import { redis } from "../../config/redis.js";
+import { userRepository } from "../../repositories/user.repository.js";
 
 const VERIFICATION_CODE_TTL = 10 * 60; // 10 minutes
 
@@ -20,12 +19,7 @@ export async function verificationRoutes(app: FastifyInstance) {
     "/auth/verify/send",
     { preHandler: [authMiddleware, createRateLimiter("auth")] },
     async (request, reply) => {
-      const [user] = await db
-        .select({ id: schema.users.id, verified: schema.users.verified, email: schema.users.email })
-        .from(schema.users)
-        .where(eq(schema.users.id, request.userId))
-        .limit(1);
-
+      const user = await userRepository.findById(request.userId);
       if (!user) throw new ApiError(404, "User not found");
       if (user.verified) throw new ApiError(400, "Email is already verified");
 
@@ -65,10 +59,7 @@ export async function verificationRoutes(app: FastifyInstance) {
       await redis.del(`verification:${request.userId}`);
 
       // Mark user as verified
-      await db
-        .update(schema.users)
-        .set({ verified: true })
-        .where(eq(schema.users.id, request.userId));
+      await userRepository.update(request.userId, { verified: true });
 
       return reply.send({ verified: true });
     }
@@ -79,12 +70,7 @@ export async function verificationRoutes(app: FastifyInstance) {
     "/auth/verify/status",
     { preHandler: [authMiddleware] },
     async (request, reply) => {
-      const [user] = await db
-        .select({ verified: schema.users.verified })
-        .from(schema.users)
-        .where(eq(schema.users.id, request.userId))
-        .limit(1);
-
+      const user = await userRepository.findById(request.userId);
       if (!user) throw new ApiError(404, "User not found");
 
       return reply.send({ verified: user.verified });

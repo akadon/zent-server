@@ -1,47 +1,31 @@
-import { eq, and } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
 import type { CreateRoleRequest } from "@yxc/types";
 import { invalidateGuildPermissions, invalidatePermissions } from "./permission.service.js";
+import { roleRepository } from "../repositories/role.repository.js";
 
 export async function createRole(guildId: string, data: CreateRoleRequest) {
   // Get highest position to put new role above @everyone
-  const existing = await db
-    .select({ position: schema.roles.position })
-    .from(schema.roles)
-    .where(eq(schema.roles.guildId, guildId));
-
+  const existing = await roleRepository.findByGuildId(guildId);
   const maxPosition = existing.reduce((max, r) => Math.max(max, r.position), 0);
 
   const id = generateSnowflake();
-  await db
-    .insert(schema.roles)
-    .values({
-      id,
-      guildId,
-      name: data.name ?? "new role",
-      color: data.color ?? 0,
-      hoist: data.hoist ?? false,
-      permissions: data.permissions ?? "0",
-      mentionable: data.mentionable ?? false,
-      position: maxPosition + 1,
-    });
+  const role = await roleRepository.create({
+    id,
+    guildId,
+    name: data.name ?? "new role",
+    color: data.color ?? 0,
+    hoist: data.hoist ?? false,
+    permissions: data.permissions ?? "0",
+    mentionable: data.mentionable ?? false,
+    position: maxPosition + 1,
+  });
 
-  const [role] = await db
-    .select()
-    .from(schema.roles)
-    .where(eq(schema.roles.id, id))
-    .limit(1);
-
-  return { ...role!, createdAt: role!.createdAt.toISOString() };
+  return { ...role, createdAt: role.createdAt.toISOString() };
 }
 
 export async function getGuildRoles(guildId: string) {
-  const roleList = await db
-    .select()
-    .from(schema.roles)
-    .where(eq(schema.roles.guildId, guildId));
+  const roleList = await roleRepository.findByGuildId(guildId);
 
   return roleList.map((r) => ({
     ...r,
@@ -60,16 +44,7 @@ export async function updateRole(
     position?: number;
   }
 ) {
-  await db
-    .update(schema.roles)
-    .set(data)
-    .where(eq(schema.roles.id, roleId));
-
-  const [updated] = await db
-    .select()
-    .from(schema.roles)
-    .where(eq(schema.roles.id, roleId))
-    .limit(1);
+  const updated = await roleRepository.update(roleId, data);
 
   if (!updated) throw new ApiError(404, "Role not found");
 
@@ -85,19 +60,10 @@ export async function deleteRole(roleId: string, guildId: string) {
     throw new ApiError(400, "Cannot delete @everyone role");
   }
 
-  await db.delete(schema.memberRoles).where(eq(schema.memberRoles.roleId, roleId));
+  const existing = await roleRepository.findById(roleId);
+  if (!existing) throw new ApiError(404, "Role not found");
 
-  const [deleted] = await db
-    .select()
-    .from(schema.roles)
-    .where(eq(schema.roles.id, roleId))
-    .limit(1);
-
-  if (!deleted) throw new ApiError(404, "Role not found");
-
-  await db
-    .delete(schema.roles)
-    .where(eq(schema.roles.id, roleId));
+  await roleRepository.delete(roleId);
 
   await invalidateGuildPermissions(guildId);
 }
@@ -107,10 +73,7 @@ export async function addRoleToMember(
   userId: string,
   roleId: string
 ) {
-  await db
-    .insert(schema.memberRoles)
-    .values({ userId, guildId, roleId })
-    .onConflictDoNothing();
+  await roleRepository.addToMember(userId, guildId, roleId);
 
   await invalidatePermissions(userId, guildId);
 }
@@ -120,29 +83,11 @@ export async function removeRoleFromMember(
   userId: string,
   roleId: string
 ) {
-  await db
-    .delete(schema.memberRoles)
-    .where(
-      and(
-        eq(schema.memberRoles.userId, userId),
-        eq(schema.memberRoles.guildId, guildId),
-        eq(schema.memberRoles.roleId, roleId)
-      )
-    );
+  await roleRepository.removeFromMember(userId, guildId, roleId);
 
   await invalidatePermissions(userId, guildId);
 }
 
 export async function getMemberRoles(guildId: string, userId: string) {
-  const memberRoleEntries = await db
-    .select({ roleId: schema.memberRoles.roleId })
-    .from(schema.memberRoles)
-    .where(
-      and(
-        eq(schema.memberRoles.userId, userId),
-        eq(schema.memberRoles.guildId, guildId)
-      )
-    );
-
-  return memberRoleEntries.map((r) => r.roleId);
+  return roleRepository.getMemberRoleIds(userId, guildId);
 }

@@ -1,6 +1,5 @@
-import { eq, and, desc } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
+import { notificationRepository } from "../repositories/notification.repository.js";
 
 export async function createNotification(
   userId: string,
@@ -15,25 +14,19 @@ export async function createNotification(
   }
 ) {
   const id = generateSnowflake();
-  await db
-    .insert(schema.notificationLog)
-    .values({
-      id,
-      userId,
-      type,
-      title,
-      body: opts?.body ?? null,
-      sourceGuildId: opts?.sourceGuildId ?? null,
-      sourceChannelId: opts?.sourceChannelId ?? null,
-      sourceMessageId: opts?.sourceMessageId ?? null,
-      sourceUserId: opts?.sourceUserId ?? null,
-    });
+  await notificationRepository.create({
+    id,
+    userId,
+    type,
+    title,
+    body: opts?.body ?? null,
+    sourceGuildId: opts?.sourceGuildId ?? null,
+    sourceChannelId: opts?.sourceChannelId ?? null,
+    sourceMessageId: opts?.sourceMessageId ?? null,
+    sourceUserId: opts?.sourceUserId ?? null,
+  });
 
-  const [notif] = await db
-    .select()
-    .from(schema.notificationLog)
-    .where(eq(schema.notificationLog.id, id))
-    .limit(1);
+  const notif = await notificationRepository.findById(id);
 
   return {
     ...notif!,
@@ -47,14 +40,7 @@ export async function getNotifications(
 ) {
   const limit = opts?.limit ?? 50;
 
-  let query = db
-    .select()
-    .from(schema.notificationLog)
-    .where(eq(schema.notificationLog.userId, userId))
-    .orderBy(desc(schema.notificationLog.createdAt))
-    .limit(limit);
-
-  const results = await query;
+  const results = await notificationRepository.findByUserId(userId, { limit });
 
   return results.map((n) => ({
     ...n,
@@ -63,21 +49,13 @@ export async function getNotifications(
 }
 
 export async function markNotificationRead(id: string, userId: string) {
-  await db
-    .update(schema.notificationLog)
-    .set({ read: true })
-    .where(and(eq(schema.notificationLog.id, id), eq(schema.notificationLog.userId, userId)));
+  await notificationRepository.markRead(id, userId);
 }
 
 export async function markAllNotificationsRead(userId: string) {
-  await db
-    .update(schema.notificationLog)
-    .set({ read: true })
-    .where(and(eq(schema.notificationLog.userId, userId), eq(schema.notificationLog.read, false)));
+  await notificationRepository.markAllRead(userId);
 }
 
 export async function clearNotifications(userId: string) {
-  await db
-    .delete(schema.notificationLog)
-    .where(eq(schema.notificationLog.userId, userId));
+  await notificationRepository.deleteAll(userId);
 }

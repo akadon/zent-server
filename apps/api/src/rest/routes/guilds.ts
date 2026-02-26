@@ -17,16 +17,22 @@ import { ApiError, getUserById } from "../../services/auth.service.js";
 import { ChannelType, AuditLogActionType } from "@yxc/types";
 import { PermissionFlags } from "@yxc/permissions";
 import { redisPub } from "../../config/redis.js";
-import { db, schema } from "../../db/index.js";
-import { eq, and } from "drizzle-orm";
 import crypto from "crypto";
+import { memberRepository } from "../../repositories/member.repository.js";
+import { messageRepository } from "../../repositories/message.repository.js";
+import { userRepository } from "../../repositories/user.repository.js";
+import { guildSettingsRepository } from "../../repositories/guild-settings.repository.js";
 
-// Helper to dispatch gateway events to a guild
+// Helper to dispatch gateway events to a guild + write to poll event log
 async function dispatchGuild(guildId: string, event: string, data: unknown) {
-  await redisPub.publish(
-    `gateway:guild:${guildId}`,
-    JSON.stringify({ event, data })
-  );
+  const payload = JSON.stringify({ event, data });
+  const now = Date.now();
+  await Promise.all([
+    redisPub.publish(`gateway:guild:${guildId}`, payload),
+    // Event log for polling clients (60s retention)
+    redisPub.zadd(`guild_events:${guildId}`, now, `${now}:${payload}`),
+    redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", now - 60000),
+  ]);
 }
 
 export async function guildRoutes(app: FastifyInstance) {
@@ -91,6 +97,156 @@ export async function guildRoutes(app: FastifyInstance) {
   app.get("/users/@me/guilds", async (request, reply) => {
     const guilds = await guildService.getUserGuilds(request.userId);
     return reply.send(guilds);
+  });
+
+  // Full initial state (replaces gateway READY for polling clients)
+  app.get("/users/@me/state", async (request, reply) => {
+    const guilds = await guildService.getUserGuilds(request.userId);
+    const channelsMap: Record<string, any[]> = {};
+    const membersMap: Record<string, any[]> = {};
+
+    await Promise.all(
+      guilds.map(async (guild: any) => {
+        const [channels, members] = await Promise.all([
+          channelService.getGuildChannels(guild.id),
+          memberService.getGuildMembers(guild.id),
+        ]);
+        channelsMap[guild.id] = channels;
+        membersMap[guild.id] = members;
+      })
+    );
+
+    reply.header("Cache-Control", "private, no-cache");
+    return reply.send({ guilds, channels: channelsMap, members: membersMap });
+  });
+
+  // Guild poll — returns events since timestamp (CF-edge cacheable per guild)
+  app.get("/guilds/:guildId/poll", async (request, reply) => {
+    const { guildId } = request.params as { guildId: string };
+    if (!(await guildService.isMember(request.userId, guildId))) {
+      throw new ApiError(403, "Not a member");
+    }
+
+    const since = (request.query as any).since;
+    const sinceTs = since ? parseInt(since, 10) : Date.now() - 30000;
+
+    // Read recent events from Redis sorted set (written by dispatch)
+    const { redis } = await import("../../config/redis.js");
+    const events = await redis.zrangebyscore(
+      `guild_events:${guildId}`,
+      sinceTs,
+      "+inf"
+    );
+
+    const parsed = events.map((e: string) => {
+      // Stored as "timestamp:jsonPayload" — strip the timestamp prefix
+      const idx = e.indexOf(":");
+      const json = idx !== -1 ? e.substring(idx + 1) : e;
+      try { return JSON.parse(json); } catch { return null; }
+    }).filter(Boolean);
+
+    // Short CF cache — all guild members get the same response for the same second
+    reply.header("Cache-Control", "public, max-age=3");
+    return reply.send({ events: parsed, serverTime: Date.now() });
+  });
+
+  // User poll — returns user-specific events since timestamp (DMs, relationships, sessions)
+  app.get("/users/@me/poll", async (request, reply) => {
+    const since = (request.query as any).since;
+    const sinceTs = since ? parseInt(since, 10) : Date.now() - 30000;
+
+    const { redis } = await import("../../config/redis.js");
+    const events = await redis.zrangebyscore(
+      `user_events:${request.userId}`,
+      sinceTs,
+      "+inf"
+    );
+
+    const parsed = events.map((e: string) => {
+      const idx = e.indexOf(":");
+      const json = idx !== -1 ? e.substring(idx + 1) : e;
+      try { return JSON.parse(json); } catch { return null; }
+    }).filter(Boolean);
+
+    reply.header("Cache-Control", "private, no-cache");
+    return reply.send({ events: parsed, serverTime: Date.now() });
+  });
+
+  // Voice join (REST proxy to zent-stream)
+  app.post("/voice/:guildId/:channelId/join", async (request, reply) => {
+    const { guildId, channelId } = request.params as { guildId: string; channelId: string };
+    if (!(await guildService.isMember(request.userId, guildId))) {
+      throw new ApiError(403, "Not a member");
+    }
+
+    if (!config.stream.url) {
+      throw new ApiError(503, "Voice service unavailable");
+    }
+
+    const body = request.body as any;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (config.stream.internalKey) headers["x-internal-key"] = config.stream.internalKey;
+
+    const res = await fetch(`${config.stream.url}/api/voice/${guildId}/${channelId}/join`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        userId: request.userId,
+        username: body?.username ?? "User",
+        channelType: body?.channelType ?? 2,
+        selfMute: body?.selfMute ?? false,
+        selfDeaf: body?.selfDeaf ?? false,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ message: "Voice service error" }));
+      throw new ApiError(res.status, (err as any).message);
+    }
+
+    const result = await res.json() as any;
+
+    // Dispatch voice state update to guild via Redis
+    const vjPayload = JSON.stringify({ event: "VOICE_STATE_UPDATE", data: result.voiceState });
+    const vjNow = Date.now();
+    await Promise.all([
+      redisPub.publish(`gateway:guild:${guildId}`, vjPayload),
+      redisPub.zadd(`guild_events:${guildId}`, vjNow, `${vjNow}:${vjPayload}`),
+      redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", vjNow - 60000),
+    ]);
+
+    return reply.send(result);
+  });
+
+  // Voice leave (REST proxy to zent-stream)
+  app.post("/voice/:guildId/leave", async (request, reply) => {
+    const { guildId } = request.params as { guildId: string };
+
+    if (!config.stream.url) {
+      throw new ApiError(503, "Voice service unavailable");
+    }
+
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (config.stream.internalKey) headers["x-internal-key"] = config.stream.internalKey;
+
+    await fetch(`${config.stream.url}/api/voice/${guildId}/leave`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ userId: request.userId }),
+    });
+
+    const vlPayload = JSON.stringify({
+      event: "VOICE_STATE_UPDATE",
+      data: { userId: request.userId, guildId, channelId: null },
+    });
+    const vlNow = Date.now();
+    await Promise.all([
+      redisPub.publish(`gateway:guild:${guildId}`, vlPayload),
+      redisPub.zadd(`guild_events:${guildId}`, vlNow, `${vlNow}:${vlPayload}`),
+      redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", vlNow - 60000),
+    ]);
+
+    return reply.status(204).send();
   });
 
   // Leave guild
@@ -252,15 +408,11 @@ export async function guildRoutes(app: FastifyInstance) {
   app.get("/guilds/:guildId/bans", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
     await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.BAN_MEMBERS);
-    const bans = await db.select().from(schema.bans).where(eq(schema.bans.guildId, guildId));
+    const bans = await memberRepository.findBansByGuildId(guildId);
     if (bans.length === 0) return reply.send([]);
 
     const bannedUserIds = bans.map((b) => b.userId);
-    const { inArray } = await import("drizzle-orm");
-    const bannedUsers = await db
-      .select({ id: schema.users.id, username: schema.users.username, avatar: schema.users.avatar })
-      .from(schema.users)
-      .where(inArray(schema.users.id, bannedUserIds));
+    const bannedUsers = await userRepository.findPublicByIds(bannedUserIds);
     const userMap = new Map(bannedUsers.map((u) => [u.id, u]));
 
     const result = bans.map((ban) => {
@@ -821,20 +973,11 @@ export async function guildRoutes(app: FastifyInstance) {
     await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.SEND_MESSAGES);
 
     // Get the message
-    const [message] = await db
-      .select()
-      .from(schema.messages)
-      .where(eq(schema.messages.id, messageId))
-      .limit(1);
-
+    const message = await messageRepository.findById(messageId);
     if (!message) throw new ApiError(404, "Message not found");
 
     // Get author info
-    const [author] = await db
-      .select()
-      .from(schema.users)
-      .where(eq(schema.users.id, message.authorId))
-      .limit(1);
+    const author = await userRepository.findById(message.authorId);
 
     // Crosspost to all followers
     const successCount = await channelFollowService.crosspostMessage(
@@ -846,10 +989,7 @@ export async function guildRoutes(app: FastifyInstance) {
     );
 
     // Mark message as crossposted (set flag)
-    await db
-      .update(schema.messages)
-      .set({ flags: (message.flags ?? 0) | 1 }) // Flag 1 = CROSSPOSTED
-      .where(eq(schema.messages.id, messageId));
+    await messageRepository.update(messageId, { flags: (message.flags ?? 0) | 1 }); // Flag 1 = CROSSPOSTED
 
     return reply.send({ ...message, flags: (message.flags ?? 0) | 1 });
   });
@@ -913,18 +1053,11 @@ export async function guildRoutes(app: FastifyInstance) {
     }
 
     if (Object.keys(updateData).length > 0) {
-      await db
-        .update(schema.members)
-        .set(updateData)
-        .where(and(eq(schema.members.userId, userId), eq(schema.members.guildId, guildId)));
+      await memberRepository.update(userId, guildId, updateData);
     }
 
     const roles = await roleService.getMemberRoles(guildId, userId);
-    const member = await db
-      .select()
-      .from(schema.members)
-      .where(and(eq(schema.members.userId, userId), eq(schema.members.guildId, guildId)))
-      .then(r => r[0]);
+    const member = await memberRepository.findByUserAndGuild(userId, guildId);
 
     const memberUpdate = {
       guildId,
@@ -951,10 +1084,7 @@ export async function guildRoutes(app: FastifyInstance) {
 
     await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.CHANGE_NICKNAME);
 
-    await db
-      .update(schema.members)
-      .set({ nickname: body.nick ?? null })
-      .where(and(eq(schema.members.userId, request.userId), eq(schema.members.guildId, guildId)));
+    await memberRepository.update(request.userId, guildId, { nickname: body.nick ?? null });
 
     const roles = await roleService.getMemberRoles(guildId, request.userId);
     await dispatchGuild(guildId, "GUILD_MEMBER_UPDATE", {
@@ -1087,11 +1217,7 @@ export async function guildRoutes(app: FastifyInstance) {
   app.get("/guilds/:guildId/widget", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
 
-    const [widget] = await db
-      .select()
-      .from(schema.guildWidgets)
-      .where(eq(schema.guildWidgets.guildId, guildId))
-      .limit(1);
+    const widget = await guildSettingsRepository.findWidget(guildId);
 
     return reply.send({
       enabled: widget?.enabled ?? false,
@@ -1111,34 +1237,10 @@ export async function guildRoutes(app: FastifyInstance) {
 
     await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_GUILD);
 
-    // Upsert widget settings
-    const existing = await db
-      .select()
-      .from(schema.guildWidgets)
-      .where(eq(schema.guildWidgets.guildId, guildId))
-      .then((r) => r[0]);
-
-    if (existing) {
-      await db
-        .update(schema.guildWidgets)
-        .set({
-          enabled: body.enabled ?? existing.enabled,
-          channelId: body.channelId !== undefined ? body.channelId : existing.channelId,
-        })
-        .where(eq(schema.guildWidgets.guildId, guildId));
-    } else {
-      await db.insert(schema.guildWidgets).values({
-        guildId,
-        enabled: body.enabled ?? false,
-        channelId: body.channelId ?? null,
-      });
-    }
-
-    const [updated] = await db
-      .select()
-      .from(schema.guildWidgets)
-      .where(eq(schema.guildWidgets.guildId, guildId))
-      .limit(1);
+    const updated = await guildSettingsRepository.upsertWidget(guildId, {
+      enabled: body.enabled,
+      channelId: body.channelId,
+    });
 
     return reply.send(updated);
   });
@@ -1147,12 +1249,7 @@ export async function guildRoutes(app: FastifyInstance) {
   app.get("/guilds/:guildId/widget.json", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
 
-    const [widget] = await db
-      .select()
-      .from(schema.guildWidgets)
-      .where(eq(schema.guildWidgets.guildId, guildId))
-      .limit(1);
-
+    const widget = await guildSettingsRepository.findWidget(guildId);
     if (!widget?.enabled) {
       throw new ApiError(403, "Widget disabled");
     }
@@ -1200,11 +1297,7 @@ export async function guildRoutes(app: FastifyInstance) {
   app.get("/guilds/:guildId/welcome-screen", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
 
-    const [screen] = await db
-      .select()
-      .from(schema.guildWelcomeScreens)
-      .where(eq(schema.guildWelcomeScreens.guildId, guildId))
-      .limit(1);
+    const screen = await guildSettingsRepository.findWelcomeScreen(guildId);
 
     if (!screen) {
       return reply.send({
@@ -1242,36 +1335,11 @@ export async function guildRoutes(app: FastifyInstance) {
 
     await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_GUILD);
 
-    const existing = await db
-      .select()
-      .from(schema.guildWelcomeScreens)
-      .where(eq(schema.guildWelcomeScreens.guildId, guildId))
-      .then((r) => r[0]);
-
-    if (existing) {
-      await db
-        .update(schema.guildWelcomeScreens)
-        .set({
-          enabled: body.enabled ?? existing.enabled,
-          description: body.description !== undefined ? body.description : existing.description,
-          welcomeChannels: body.welcome_channels ?? existing.welcomeChannels,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.guildWelcomeScreens.guildId, guildId));
-    } else {
-      await db.insert(schema.guildWelcomeScreens).values({
-        guildId,
-        enabled: body.enabled ?? false,
-        description: body.description ?? null,
-        welcomeChannels: body.welcome_channels ?? [],
-      });
-    }
-
-    const [updated] = await db
-      .select()
-      .from(schema.guildWelcomeScreens)
-      .where(eq(schema.guildWelcomeScreens.guildId, guildId))
-      .limit(1);
+    const updated = await guildSettingsRepository.upsertWelcomeScreen(guildId, {
+      enabled: body.enabled,
+      description: body.description,
+      welcomeChannels: body.welcome_channels,
+    });
 
     return reply.send({
       description: updated?.description ?? null,
@@ -1287,11 +1355,7 @@ export async function guildRoutes(app: FastifyInstance) {
   app.get("/guilds/:guildId/onboarding", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
 
-    const [onboarding] = await db
-      .select()
-      .from(schema.guildOnboarding)
-      .where(eq(schema.guildOnboarding.guildId, guildId))
-      .limit(1);
+    const onboarding = await guildSettingsRepository.findOnboarding(guildId);
 
     return reply.send({
       guild_id: guildId,
@@ -1316,38 +1380,12 @@ export async function guildRoutes(app: FastifyInstance) {
 
     await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_GUILD);
 
-    const existing = await db
-      .select()
-      .from(schema.guildOnboarding)
-      .where(eq(schema.guildOnboarding.guildId, guildId))
-      .then((r) => r[0]);
-
-    if (existing) {
-      await db
-        .update(schema.guildOnboarding)
-        .set({
-          prompts: body.prompts ?? existing.prompts,
-          defaultChannelIds: body.default_channel_ids ?? existing.defaultChannelIds,
-          enabled: body.enabled ?? existing.enabled,
-          mode: body.mode ?? existing.mode,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.guildOnboarding.guildId, guildId));
-    } else {
-      await db.insert(schema.guildOnboarding).values({
-        guildId,
-        prompts: body.prompts ?? [],
-        defaultChannelIds: body.default_channel_ids ?? [],
-        enabled: body.enabled ?? false,
-        mode: body.mode ?? 0,
-      });
-    }
-
-    const [updated] = await db
-      .select()
-      .from(schema.guildOnboarding)
-      .where(eq(schema.guildOnboarding.guildId, guildId))
-      .limit(1);
+    const updated = await guildSettingsRepository.upsertOnboarding(guildId, {
+      prompts: body.prompts,
+      defaultChannelIds: body.default_channel_ids,
+      enabled: body.enabled,
+      mode: body.mode,
+    });
 
     return reply.send({
       guild_id: guildId,
@@ -1369,11 +1407,7 @@ export async function guildRoutes(app: FastifyInstance) {
     const guild = await guildService.getGuild(guildId);
     if (!guild) throw new ApiError(404, "Guild not found");
 
-    const [preview] = await db
-      .select()
-      .from(schema.guildPreviews)
-      .where(eq(schema.guildPreviews.guildId, guildId))
-      .limit(1);
+    const preview = await guildSettingsRepository.findPreview(guildId);
 
     // Check if user is member or guild is discoverable
     const isMember = await guildService.isMember(request.userId, guildId);

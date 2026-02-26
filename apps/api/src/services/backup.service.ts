@@ -1,41 +1,28 @@
-import { eq, desc } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
+import { backupRepository } from "../repositories/backup.repository.js";
+import { guildRepository } from "../repositories/guild.repository.js";
+import { channelRepository } from "../repositories/channel.repository.js";
+import { roleRepository } from "../repositories/role.repository.js";
+import { emojiRepository } from "../repositories/emoji.repository.js";
+import { permissionRepository } from "../repositories/permission.repository.js";
 
 export async function createBackup(guildId: string, userId: string) {
   // Verify owner
-  const [guild] = await db
-    .select()
-    .from(schema.guilds)
-    .where(eq(schema.guilds.id, guildId))
-    .limit(1);
-
+  const guild = await guildRepository.findById(guildId);
   if (!guild) throw new ApiError(404, "Guild not found");
   if (guild.ownerId !== userId) throw new ApiError(403, "Only the owner can create backups");
 
   // Gather all guild data
-  const channels = await db
-    .select()
-    .from(schema.channels)
-    .where(eq(schema.channels.guildId, guildId));
-
-  const roles = await db
-    .select()
-    .from(schema.roles)
-    .where(eq(schema.roles.guildId, guildId));
-
-  const emojis = await db
-    .select()
-    .from(schema.emojis)
-    .where(eq(schema.emojis.guildId, guildId));
+  const [channels, roles, emojis] = await Promise.all([
+    channelRepository.findByGuildId(guildId),
+    roleRepository.findByGuildId(guildId),
+    emojiRepository.findByGuildId(guildId),
+  ]);
 
   const overwrites = [];
   for (const ch of channels) {
-    const ow = await db
-      .select()
-      .from(schema.permissionOverwrites)
-      .where(eq(schema.permissionOverwrites.channelId, ch.id));
+    const ow = await permissionRepository.findOverwritesByChannelId(ch.id);
     overwrites.push(...ow);
   }
 
@@ -85,40 +72,23 @@ export async function createBackup(guildId: string, userId: string) {
   };
 
   const id = generateSnowflake();
-  await db
-    .insert(schema.serverBackups)
-    .values({
-      id,
-      guildId,
-      createdBy: userId,
-      data: backupData,
-    });
-
-  const [backup] = await db
-    .select()
-    .from(schema.serverBackups)
-    .where(eq(schema.serverBackups.id, id))
-    .limit(1);
+  const backup = await backupRepository.create({
+    id,
+    guildId,
+    createdBy: userId,
+    data: backupData,
+  });
 
   return {
-    id: backup!.id,
-    guildId: backup!.guildId,
-    createdBy: backup!.createdBy,
-    createdAt: backup!.createdAt.toISOString(),
+    id: backup.id,
+    guildId: backup.guildId,
+    createdBy: backup.createdBy,
+    createdAt: backup.createdAt.toISOString(),
   };
 }
 
 export async function getBackups(guildId: string) {
-  const backups = await db
-    .select({
-      id: schema.serverBackups.id,
-      guildId: schema.serverBackups.guildId,
-      createdBy: schema.serverBackups.createdBy,
-      createdAt: schema.serverBackups.createdAt,
-    })
-    .from(schema.serverBackups)
-    .where(eq(schema.serverBackups.guildId, guildId))
-    .orderBy(desc(schema.serverBackups.createdAt));
+  const backups = await backupRepository.findByGuildId(guildId);
 
   return backups.map((b) => ({
     ...b,
@@ -127,12 +97,7 @@ export async function getBackups(guildId: string) {
 }
 
 export async function getBackup(id: string) {
-  const [backup] = await db
-    .select()
-    .from(schema.serverBackups)
-    .where(eq(schema.serverBackups.id, id))
-    .limit(1);
-
+  const backup = await backupRepository.findById(id);
   if (!backup) throw new ApiError(404, "Backup not found");
 
   return {
@@ -142,24 +107,14 @@ export async function getBackup(id: string) {
 }
 
 export async function deleteBackup(id: string, userId: string) {
-  const [backup] = await db
-    .select()
-    .from(schema.serverBackups)
-    .where(eq(schema.serverBackups.id, id))
-    .limit(1);
-
+  const backup = await backupRepository.findById(id);
   if (!backup) throw new ApiError(404, "Backup not found");
 
   // Verify guild owner
-  const [guild] = await db
-    .select({ ownerId: schema.guilds.ownerId })
-    .from(schema.guilds)
-    .where(eq(schema.guilds.id, backup.guildId))
-    .limit(1);
-
+  const guild = await guildRepository.findOwnerById(backup.guildId);
   if (!guild || guild.ownerId !== userId) {
     throw new ApiError(403, "Only the owner can delete backups");
   }
 
-  await db.delete(schema.serverBackups).where(eq(schema.serverBackups.id, id));
+  await backupRepository.delete(id);
 }

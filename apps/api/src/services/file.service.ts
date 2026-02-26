@@ -1,4 +1,5 @@
 import { Client as MinioClient } from "minio";
+import { config } from "../config/config.js";
 import { env } from "../config/env.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
@@ -6,14 +7,14 @@ import crypto from "crypto";
 import path from "path";
 
 const minio = new MinioClient({
-  endPoint: env.MINIO_ENDPOINT,
-  port: env.MINIO_PORT,
-  useSSL: env.MINIO_USE_SSL,
-  accessKey: env.MINIO_ACCESS_KEY,
-  secretKey: env.MINIO_SECRET_KEY,
+  endPoint: config.s3.endpoint,
+  port: config.s3.port,
+  useSSL: config.s3.useSSL,
+  accessKey: config.s3.accessKey,
+  secretKey: config.s3.secretKey,
 });
 
-const BUCKET = env.MINIO_BUCKET;
+const BUCKET = config.s3.bucket;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB — more generous than Discord's 10MB free
 const ALLOWED_TYPES = new Set([
   "image/jpeg",

@@ -1,7 +1,6 @@
-import { eq, and, isNull } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
+import { interactionRepository } from "../repositories/interaction.repository.js";
 import crypto from "crypto";
 
 export interface Interaction {
@@ -55,25 +54,17 @@ export async function createInteraction(
   const id = generateSnowflake();
   const token = crypto.randomBytes(32).toString("hex");
 
-  await db
-    .insert(schema.interactions)
-    .values({
-      id,
-      applicationId,
-      type,
-      guildId: data.guildId ?? null,
-      channelId: data.channelId ?? null,
-      userId,
-      token,
-      data: data.data ?? null,
-      version: 1,
-    });
-
-  const [interaction] = await db
-    .select()
-    .from(schema.interactions)
-    .where(eq(schema.interactions.id, id))
-    .limit(1);
+  const interaction = await interactionRepository.create({
+    id,
+    applicationId,
+    type,
+    guildId: data.guildId ?? null,
+    channelId: data.channelId ?? null,
+    userId,
+    token,
+    data: data.data ?? null,
+    version: 1,
+  });
 
   if (!interaction) {
     throw new ApiError(500, "Failed to create interaction");
@@ -83,21 +74,11 @@ export async function createInteraction(
 }
 
 export async function getInteraction(interactionId: string): Promise<Interaction | null> {
-  const [interaction] = await db
-    .select()
-    .from(schema.interactions)
-    .where(eq(schema.interactions.id, interactionId))
-    .limit(1);
-
-  return interaction ?? null;
+  return interactionRepository.findById(interactionId);
 }
 
 export async function getInteractionByToken(token: string): Promise<Interaction | null> {
-  const [interaction] = await db
-    .select()
-    .from(schema.interactions)
-    .where(eq(schema.interactions.token, token))
-    .limit(1);
+  const interaction = await interactionRepository.findByToken(token);
 
   if (!interaction) {
     return null;
@@ -113,10 +94,7 @@ export async function getInteractionByToken(token: string): Promise<Interaction 
 }
 
 export async function markInteractionResponded(interactionId: string): Promise<void> {
-  await db
-    .update(schema.interactions)
-    .set({ respondedAt: new Date() })
-    .where(eq(schema.interactions.id, interactionId));
+  await interactionRepository.markResponded(interactionId);
 }
 
 // ── Command Resolution ──
@@ -128,37 +106,14 @@ export async function resolveCommand(
 ): Promise<any | null> {
   // First check guild commands
   if (guildId) {
-    const [guildCommand] = await db
-      .select()
-      .from(schema.applicationCommands)
-      .where(
-        and(
-          eq(schema.applicationCommands.applicationId, applicationId),
-          eq(schema.applicationCommands.guildId, guildId),
-          eq(schema.applicationCommands.name, commandName)
-        )
-      )
-      .limit(1);
-
+    const guildCommand = await interactionRepository.findGuildCommand(applicationId, guildId, commandName);
     if (guildCommand) {
       return guildCommand;
     }
   }
 
   // Fall back to global commands
-  const [globalCommand] = await db
-    .select()
-    .from(schema.applicationCommands)
-    .where(
-      and(
-        eq(schema.applicationCommands.applicationId, applicationId),
-        isNull(schema.applicationCommands.guildId),
-        eq(schema.applicationCommands.name, commandName)
-      )
-    )
-    .limit(1);
-
-  return globalCommand ?? null;
+  return interactionRepository.findGlobalCommand(applicationId, commandName);
 }
 
 // ── Interaction Response Helpers ──

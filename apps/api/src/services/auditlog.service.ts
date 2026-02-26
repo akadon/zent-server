@@ -1,7 +1,6 @@
-import { eq, and, desc } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { redisPub } from "../config/redis.js";
+import { auditlogRepository } from "../repositories/auditlog.repository.js";
 
 export async function createAuditLogEntry(
   guildId: string,
@@ -13,32 +12,26 @@ export async function createAuditLogEntry(
 ) {
   const id = generateSnowflake();
 
-  await db
-    .insert(schema.auditLogEntries)
-    .values({
-      id,
-      guildId,
-      userId,
-      actionType,
-      targetId: targetId ?? null,
-      reason: reason ?? null,
-      changes: changes ? JSON.parse(JSON.stringify(changes)) : null,
-    });
+  await auditlogRepository.create({
+    id,
+    guildId,
+    userId,
+    actionType,
+    targetId: targetId ?? null,
+    reason: reason ?? null,
+    changes: changes ? JSON.parse(JSON.stringify(changes)) : null,
+  });
 
-  const [entry] = await db
-    .select()
-    .from(schema.auditLogEntries)
-    .where(eq(schema.auditLogEntries.id, id))
-    .limit(1);
+  const entry = await auditlogRepository.findById(id);
 
-  // Dispatch GUILD_AUDIT_LOG_ENTRY_CREATE to guild members
-  redisPub.publish(
-    `gateway:guild:${guildId}`,
-    JSON.stringify({
-      event: "GUILD_AUDIT_LOG_ENTRY_CREATE",
-      data: { ...entry!, createdAt: entry!.createdAt.toISOString() },
-    })
-  ).catch(() => {});
+  // Dispatch GUILD_AUDIT_LOG_ENTRY_CREATE to guild members + event log
+  const alPayload = JSON.stringify({ event: "GUILD_AUDIT_LOG_ENTRY_CREATE", data: { ...entry!, createdAt: entry!.createdAt.toISOString() } });
+  const alNow = Date.now();
+  Promise.all([
+    redisPub.publish(`gateway:guild:${guildId}`, alPayload),
+    redisPub.zadd(`guild_events:${guildId}`, alNow, `${alNow}:${alPayload}`),
+    redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", alNow - 60000),
+  ]).catch(() => {});
 
   return entry!;
 }
@@ -54,22 +47,11 @@ export async function getAuditLog(
 ) {
   const limit = Math.min(options?.limit ?? 50, 100);
 
-  // Build conditions
-  const conditions = [eq(schema.auditLogEntries.guildId, guildId)];
-
-  if (options?.userId) {
-    conditions.push(eq(schema.auditLogEntries.userId, options.userId));
-  }
-  if (options?.actionType !== undefined) {
-    conditions.push(eq(schema.auditLogEntries.actionType, options.actionType));
-  }
-
-  const entries = await db
-    .select()
-    .from(schema.auditLogEntries)
-    .where(and(...conditions))
-    .orderBy(desc(schema.auditLogEntries.createdAt))
-    .limit(limit);
+  const entries = await auditlogRepository.findByGuildId(guildId, {
+    userId: options?.userId,
+    actionType: options?.actionType,
+    limit,
+  });
 
   return entries.map((e) => ({
     ...e,

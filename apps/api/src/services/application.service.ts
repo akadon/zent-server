@@ -1,7 +1,6 @@
-import { eq, and, isNull } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
+import { applicationRepository } from "../repositories/application.repository.js";
 import crypto from "crypto";
 
 export interface Application {
@@ -42,22 +41,14 @@ export async function createApplication(
   const id = generateSnowflake();
   const verifyKey = crypto.randomBytes(32).toString("hex");
 
-  await db
-    .insert(schema.applications)
-    .values({
-      id,
-      name,
-      description: "",
-      ownerId,
-      verifyKey,
-      flags: 0,
-    });
-
-  const [app] = await db
-    .select()
-    .from(schema.applications)
-    .where(eq(schema.applications.id, id))
-    .limit(1);
+  const app = await applicationRepository.create({
+    id,
+    name,
+    description: "",
+    ownerId,
+    verifyKey,
+    flags: 0,
+  });
 
   if (!app) {
     throw new ApiError(500, "Failed to create application");
@@ -67,20 +58,11 @@ export async function createApplication(
 }
 
 export async function getApplication(appId: string): Promise<Application | null> {
-  const [app] = await db
-    .select()
-    .from(schema.applications)
-    .where(eq(schema.applications.id, appId))
-    .limit(1);
-
-  return app ?? null;
+  return applicationRepository.findById(appId);
 }
 
 export async function getUserApplications(userId: string): Promise<Application[]> {
-  return db
-    .select()
-    .from(schema.applications)
-    .where(eq(schema.applications.ownerId, userId));
+  return applicationRepository.findByUserId(userId);
 }
 
 export async function updateApplication(
@@ -95,58 +77,21 @@ export async function updateApplication(
     interactionsEndpointUrl: string | null;
   }>
 ): Promise<Application> {
-  await db
-    .update(schema.applications)
-    .set(data)
-    .where(
-      and(
-        eq(schema.applications.id, appId),
-        eq(schema.applications.ownerId, ownerId)
-      )
-    );
-
-  const [app] = await db
-    .select()
-    .from(schema.applications)
-    .where(
-      and(
-        eq(schema.applications.id, appId),
-        eq(schema.applications.ownerId, ownerId)
-      )
-    )
-    .limit(1);
-
-  if (!app) {
+  const existing = await applicationRepository.findById(appId);
+  if (!existing || existing.ownerId !== ownerId) {
     throw new ApiError(404, "Application not found or you don't own it");
   }
 
-  return app;
+  return applicationRepository.update(appId, data);
 }
 
 export async function deleteApplication(appId: string, ownerId: string): Promise<void> {
-  const [existing] = await db
-    .select()
-    .from(schema.applications)
-    .where(
-      and(
-        eq(schema.applications.id, appId),
-        eq(schema.applications.ownerId, ownerId)
-      )
-    )
-    .limit(1);
-
-  if (!existing) {
+  const existing = await applicationRepository.findById(appId);
+  if (!existing || existing.ownerId !== ownerId) {
     throw new ApiError(404, "Application not found or you don't own it");
   }
 
-  await db
-    .delete(schema.applications)
-    .where(
-      and(
-        eq(schema.applications.id, appId),
-        eq(schema.applications.ownerId, ownerId)
-      )
-    );
+  await applicationRepository.delete(appId);
 }
 
 // ── Application Commands (Slash Commands) ──
@@ -172,27 +117,19 @@ export async function createCommand(
   const id = generateSnowflake();
   const version = generateSnowflake();
 
-  await db
-    .insert(schema.applicationCommands)
-    .values({
-      id,
-      applicationId,
-      guildId,
-      name: data.name,
-      description: data.description,
-      type: data.type ?? 1,
-      options: data.options ?? null,
-      defaultMemberPermissions: data.defaultMemberPermissions ?? null,
-      dmPermission: data.dmPermission ?? true,
-      nsfw: data.nsfw ?? false,
-      version,
-    });
-
-  const [command] = await db
-    .select()
-    .from(schema.applicationCommands)
-    .where(eq(schema.applicationCommands.id, id))
-    .limit(1);
+  const command = await applicationRepository.createCommand({
+    id,
+    applicationId,
+    guildId,
+    name: data.name,
+    description: data.description,
+    type: data.type ?? 1,
+    options: data.options ?? null,
+    defaultMemberPermissions: data.defaultMemberPermissions ?? null,
+    dmPermission: data.dmPermission ?? true,
+    nsfw: data.nsfw ?? false,
+    version,
+  });
 
   if (!command) {
     throw new ApiError(500, "Failed to create command");
@@ -202,48 +139,21 @@ export async function createCommand(
 }
 
 export async function getGlobalCommands(applicationId: string): Promise<ApplicationCommand[]> {
-  return db
-    .select()
-    .from(schema.applicationCommands)
-    .where(
-      and(
-        eq(schema.applicationCommands.applicationId, applicationId),
-        isNull(schema.applicationCommands.guildId)
-      )
-    );
+  return applicationRepository.findGlobalCommands(applicationId);
 }
 
 export async function getGuildCommands(
   applicationId: string,
   guildId: string
 ): Promise<ApplicationCommand[]> {
-  return db
-    .select()
-    .from(schema.applicationCommands)
-    .where(
-      and(
-        eq(schema.applicationCommands.applicationId, applicationId),
-        eq(schema.applicationCommands.guildId, guildId)
-      )
-    );
+  return applicationRepository.findCommands(applicationId, guildId);
 }
 
 export async function getCommand(
   applicationId: string,
   commandId: string
 ): Promise<ApplicationCommand | null> {
-  const [command] = await db
-    .select()
-    .from(schema.applicationCommands)
-    .where(
-      and(
-        eq(schema.applicationCommands.applicationId, applicationId),
-        eq(schema.applicationCommands.id, commandId)
-      )
-    )
-    .limit(1);
-
-  return command ?? null;
+  return applicationRepository.findCommandById(applicationId, commandId);
 }
 
 export async function updateCommand(
@@ -264,26 +174,7 @@ export async function updateCommand(
 
   const version = generateSnowflake();
 
-  await db
-    .update(schema.applicationCommands)
-    .set({ ...data, version })
-    .where(
-      and(
-        eq(schema.applicationCommands.applicationId, applicationId),
-        eq(schema.applicationCommands.id, commandId)
-      )
-    );
-
-  const [command] = await db
-    .select()
-    .from(schema.applicationCommands)
-    .where(
-      and(
-        eq(schema.applicationCommands.applicationId, applicationId),
-        eq(schema.applicationCommands.id, commandId)
-      )
-    )
-    .limit(1);
+  const command = await applicationRepository.updateCommand(commandId, { ...data, version });
 
   if (!command) {
     throw new ApiError(404, "Command not found");
@@ -296,29 +187,13 @@ export async function deleteCommand(
   applicationId: string,
   commandId: string
 ): Promise<void> {
-  const [existing] = await db
-    .select()
-    .from(schema.applicationCommands)
-    .where(
-      and(
-        eq(schema.applicationCommands.applicationId, applicationId),
-        eq(schema.applicationCommands.id, commandId)
-      )
-    )
-    .limit(1);
+  const existing = await applicationRepository.findCommandById(applicationId, commandId);
 
   if (!existing) {
     throw new ApiError(404, "Command not found");
   }
 
-  await db
-    .delete(schema.applicationCommands)
-    .where(
-      and(
-        eq(schema.applicationCommands.applicationId, applicationId),
-        eq(schema.applicationCommands.id, commandId)
-      )
-    );
+  await applicationRepository.deleteCommand(commandId);
 }
 
 export async function bulkOverwriteGlobalCommands(
@@ -334,14 +209,7 @@ export async function bulkOverwriteGlobalCommands(
   }>
 ): Promise<ApplicationCommand[]> {
   // Delete all existing global commands
-  await db
-    .delete(schema.applicationCommands)
-    .where(
-      and(
-        eq(schema.applicationCommands.applicationId, applicationId),
-        isNull(schema.applicationCommands.guildId)
-      )
-    );
+  await applicationRepository.deleteGlobalCommands(applicationId);
 
   // Insert new commands
   const results: ApplicationCommand[] = [];
@@ -367,14 +235,7 @@ export async function bulkOverwriteGuildCommands(
   }>
 ): Promise<ApplicationCommand[]> {
   // Delete all existing guild commands
-  await db
-    .delete(schema.applicationCommands)
-    .where(
-      and(
-        eq(schema.applicationCommands.applicationId, applicationId),
-        eq(schema.applicationCommands.guildId, guildId)
-      )
-    );
+  await applicationRepository.deleteGuildCommands(applicationId, guildId);
 
   // Insert new commands
   const results: ApplicationCommand[] = [];

@@ -1,7 +1,7 @@
-import { eq, and, isNull } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
+import { stickerRepository } from "../repositories/sticker.repository.js";
+import { guildRepository } from "../repositories/guild.repository.js";
 
 export interface Sticker {
   id: string;
@@ -32,20 +32,11 @@ export const StickerFormatType = {
 // ── Guild Stickers ──
 
 export async function getGuildStickers(guildId: string): Promise<Sticker[]> {
-  return db
-    .select()
-    .from(schema.stickers)
-    .where(eq(schema.stickers.guildId, guildId));
+  return stickerRepository.findByGuildId(guildId);
 }
 
 export async function getSticker(stickerId: string): Promise<Sticker | null> {
-  const [sticker] = await db
-    .select()
-    .from(schema.stickers)
-    .where(eq(schema.stickers.id, stickerId))
-    .limit(1);
-
-  return sticker ?? null;
+  return stickerRepository.findById(stickerId);
 }
 
 export async function createGuildSticker(
@@ -59,17 +50,10 @@ export async function createGuildSticker(
   }
 ): Promise<Sticker> {
   // Check sticker limits (50 for base, more with boosts)
-  const existingStickers = await db
-    .select()
-    .from(schema.stickers)
-    .where(eq(schema.stickers.guildId, guildId));
+  const existingStickers = await stickerRepository.findByGuildId(guildId);
 
   // Get guild's premium tier for sticker limit
-  const [guild] = await db
-    .select({ premiumTier: schema.guilds.premiumTier })
-    .from(schema.guilds)
-    .where(eq(schema.guilds.id, guildId))
-    .limit(1);
+  const guild = await guildRepository.findById(guildId);
 
   const stickerLimit = getStickerLimit(guild?.premiumTier ?? 0);
 
@@ -79,25 +63,16 @@ export async function createGuildSticker(
 
   const id = generateSnowflake();
 
-  await db
-    .insert(schema.stickers)
-    .values({
-      id,
-      guildId,
-      name: data.name,
-      description: data.description ?? null,
-      tags: data.tags,
-      type: StickerType.GUILD,
-      formatType: data.formatType,
-      available: true,
-      userId,
-    });
-
-  const [sticker] = await db
-    .select()
-    .from(schema.stickers)
-    .where(eq(schema.stickers.id, id))
-    .limit(1);
+  const sticker = await stickerRepository.create({
+    id,
+    guildId,
+    name: data.name,
+    description: data.description ?? null,
+    tags: data.tags,
+    type: StickerType.GUILD,
+    formatType: data.formatType,
+    userId,
+  });
 
   if (!sticker) {
     throw new ApiError(500, "Failed to create sticker");
@@ -115,26 +90,13 @@ export async function updateGuildSticker(
     tags?: string;
   }
 ): Promise<Sticker> {
-  await db
-    .update(schema.stickers)
-    .set(data)
-    .where(
-      and(
-        eq(schema.stickers.id, stickerId),
-        eq(schema.stickers.guildId, guildId)
-      )
-    );
+  const existing = await stickerRepository.findById(stickerId);
 
-  const [sticker] = await db
-    .select()
-    .from(schema.stickers)
-    .where(
-      and(
-        eq(schema.stickers.id, stickerId),
-        eq(schema.stickers.guildId, guildId)
-      )
-    )
-    .limit(1);
+  if (!existing || existing.guildId !== guildId) {
+    throw new ApiError(404, "Sticker not found");
+  }
+
+  const sticker = await stickerRepository.update(stickerId, data);
 
   if (!sticker) {
     throw new ApiError(404, "Sticker not found");
@@ -144,29 +106,13 @@ export async function updateGuildSticker(
 }
 
 export async function deleteGuildSticker(guildId: string, stickerId: string): Promise<void> {
-  const [existing] = await db
-    .select()
-    .from(schema.stickers)
-    .where(
-      and(
-        eq(schema.stickers.id, stickerId),
-        eq(schema.stickers.guildId, guildId)
-      )
-    )
-    .limit(1);
+  const existing = await stickerRepository.findById(stickerId);
 
-  if (!existing) {
+  if (!existing || existing.guildId !== guildId) {
     throw new ApiError(404, "Sticker not found");
   }
 
-  await db
-    .delete(schema.stickers)
-    .where(
-      and(
-        eq(schema.stickers.id, stickerId),
-        eq(schema.stickers.guildId, guildId)
-      )
-    );
+  await stickerRepository.delete(stickerId);
 }
 
 // ── Message Stickers ──
@@ -175,34 +121,17 @@ export async function addStickerToMessage(
   messageId: string,
   stickerId: string
 ): Promise<void> {
-  await db.insert(schema.messageStickers).values({
-    messageId,
-    stickerId,
-  });
+  await stickerRepository.addToMessage(messageId, stickerId);
 }
 
 export async function getMessageStickers(messageId: string): Promise<Sticker[]> {
-  const result = await db
-    .select({ sticker: schema.stickers })
-    .from(schema.messageStickers)
-    .innerJoin(schema.stickers, eq(schema.messageStickers.stickerId, schema.stickers.id))
-    .where(eq(schema.messageStickers.messageId, messageId));
-
-  return result.map((r) => r.sticker);
+  return stickerRepository.findByMessageId(messageId);
 }
 
 // ── Sticker Packs (Standard Stickers) ──
 
 export async function getStandardStickers(): Promise<Sticker[]> {
-  return db
-    .select()
-    .from(schema.stickers)
-    .where(
-      and(
-        eq(schema.stickers.type, StickerType.STANDARD),
-        isNull(schema.stickers.guildId)
-      )
-    );
+  return stickerRepository.findStandard();
 }
 
 // ── Helpers ──

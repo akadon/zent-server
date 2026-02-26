@@ -13,9 +13,9 @@ import { ApiError } from "../../services/auth.service.js";
 import * as permissionService from "../../services/permission.service.js";
 import { PermissionFlags } from "@yxc/permissions";
 import { redisPub } from "../../config/redis.js";
-import { db, schema } from "../../db/index.js";
-import { eq, inArray } from "drizzle-orm";
 import { generateSnowflake } from "@yxc/snowflake";
+import { channelRepository } from "../../repositories/channel.repository.js";
+import { messageRepository } from "../../repositories/message.repository.js";
 
 // Schema for message components
 const componentSchema: z.ZodType<messageComponentService.ComponentData> = z.lazy(() =>
@@ -56,25 +56,28 @@ async function dispatchMessage(channelId: string, event: string, data: unknown) 
   const channel = await channelService.getChannel(channelId);
   if (!channel) return;
 
-  if (channel.guildId) {
-    // Guild channel — dispatch to the guild room
-    await redisPub.publish(
-      `gateway:guild:${channel.guildId}`,
-      JSON.stringify({ event, data })
-    );
-  } else {
-    // DM channel — dispatch to each participant
-    const participants = await db
-      .select({ userId: schema.dmChannels.userId })
-      .from(schema.dmChannels)
-      .where(eq(schema.dmChannels.channelId, channelId));
+  const payload = JSON.stringify({ event, data });
+  const now = Date.now();
 
-    for (const p of participants) {
-      await redisPub.publish(
-        `gateway:user:${p.userId}`,
-        JSON.stringify({ event, data })
-      );
-    }
+  if (channel.guildId) {
+    // Guild channel — dispatch to the guild room + event log
+    await Promise.all([
+      redisPub.publish(`gateway:guild:${channel.guildId}`, payload),
+      redisPub.zadd(`guild_events:${channel.guildId}`, now, `${now}:${payload}`),
+      redisPub.zremrangebyscore(`guild_events:${channel.guildId}`, "-inf", now - 60000),
+    ]);
+  } else {
+    // DM channel — dispatch to each participant + user event log
+    const participants = await channelRepository.findDMParticipantsByChannelIds([channelId]);
+
+    await Promise.all(participants.map((p) => {
+      const now = Date.now();
+      return Promise.all([
+        redisPub.publish(`gateway:user:${p.userId}`, payload),
+        redisPub.zadd(`user_events:${p.userId}`, now, `${now}:${payload}`),
+        redisPub.zremrangebyscore(`user_events:${p.userId}`, "-inf", now - 60000),
+      ]);
+    }));
   }
 }
 
@@ -246,8 +249,8 @@ export async function messageRoutes(app: FastifyInstance) {
 
       // Save attachment records to DB
       if (message && attachments.length > 0) {
-        for (const att of attachments) {
-          await db.insert(schema.messageAttachments).values({
+        await messageRepository.createAttachments(
+          attachments.map((att) => ({
             id: att.id,
             messageId: message.id,
             filename: att.filename,
@@ -255,8 +258,8 @@ export async function messageRoutes(app: FastifyInstance) {
             url: att.url,
             proxyUrl: att.proxyUrl,
             contentType: att.contentType,
-          });
-        }
+          }))
+        );
         const full = await messageService.getMessageWithAuthor(message.id);
         await dispatchMessage(channelId, "MESSAGE_CREATE", full);
         return reply.status(201).send(full);
@@ -346,9 +349,7 @@ export async function messageRoutes(app: FastifyInstance) {
 
       await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.MANAGE_MESSAGES);
 
-      await db
-        .delete(schema.messages)
-        .where(inArray(schema.messages.id, body.messages));
+      await messageRepository.deleteByIds(body.messages);
 
       await dispatchMessage(channelId, "MESSAGE_DELETE_BULK", {
         ids: body.messages,

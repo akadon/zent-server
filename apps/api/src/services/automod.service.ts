@@ -1,6 +1,5 @@
-import { eq } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { redisPub } from "../config/redis.js";
+import { automodRepository } from "../repositories/automod.repository.js";
 
 export interface AutoModConfig {
   enabled: boolean;
@@ -65,11 +64,7 @@ export async function getConfig(guildId: string): Promise<AutoModConfig> {
     return cached.config;
   }
 
-  const [row] = await db
-    .select()
-    .from(schema.automodConfig)
-    .where(eq(schema.automodConfig.guildId, guildId))
-    .limit(1);
+  const row = await automodRepository.findByGuildId(guildId);
 
   if (!row) {
     return { ...DEFAULT_CONFIG };
@@ -88,52 +83,29 @@ export async function getConfig(guildId: string): Promise<AutoModConfig> {
 }
 
 export async function setConfig(guildId: string, config: AutoModConfig): Promise<void> {
-  const existing = await db
-    .select({ guildId: schema.automodConfig.guildId })
-    .from(schema.automodConfig)
-    .where(eq(schema.automodConfig.guildId, guildId))
-    .limit(1);
-
-  if (existing.length > 0) {
-    await db
-      .update(schema.automodConfig)
-      .set({
-        enabled: config.enabled,
-        keywordFilters: config.keywordFilters,
-        mentionSpam: config.mentionSpam,
-        linkFilter: config.linkFilter,
-        antiRaid: config.antiRaid,
-      })
-      .where(eq(schema.automodConfig.guildId, guildId));
-  } else {
-    await db.insert(schema.automodConfig).values({
-      guildId,
-      enabled: config.enabled,
-      keywordFilters: config.keywordFilters,
-      mentionSpam: config.mentionSpam,
-      linkFilter: config.linkFilter,
-      antiRaid: config.antiRaid,
-    });
-  }
+  await automodRepository.update(guildId, {
+    enabled: config.enabled,
+    keywordFilters: config.keywordFilters,
+    mentionSpam: config.mentionSpam,
+    linkFilter: config.linkFilter,
+    antiRaid: config.antiRaid,
+  });
 
   // Update cache
   configCache.set(guildId, { config, cachedAt: Date.now() });
 
-  // Dispatch event
-  await redisPub.publish(
-    `gateway:guild:${guildId}`,
-    JSON.stringify({
-      event: "AUTO_MODERATION_RULE_UPDATE",
-      data: { guildId, config },
-    })
-  );
+  // Dispatch event + event log
+  const payload = JSON.stringify({ event: "AUTO_MODERATION_RULE_UPDATE", data: { guildId, config } });
+  const now = Date.now();
+  await Promise.all([
+    redisPub.publish(`gateway:guild:${guildId}`, payload),
+    redisPub.zadd(`guild_events:${guildId}`, now, `${now}:${payload}`),
+    redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", now - 60000),
+  ]);
 }
 
 export async function deleteConfig(guildId: string): Promise<void> {
-  await db
-    .delete(schema.automodConfig)
-    .where(eq(schema.automodConfig.guildId, guildId));
-
+  await automodRepository.delete(guildId);
   configCache.delete(guildId);
 }
 
@@ -254,19 +226,14 @@ export async function recordAction(
   messageId?: string,
   channelId?: string
 ): Promise<void> {
-  await redisPub.publish(
-    `gateway:guild:${guildId}`,
-    JSON.stringify({
-      event: "AUTO_MODERATION_ACTION_EXECUTION",
-      data: {
-        guildId,
-        userId,
-        action,
-        reason,
-        messageId,
-        channelId,
-        executedAt: new Date().toISOString(),
-      },
-    })
-  );
+  const payload = JSON.stringify({
+    event: "AUTO_MODERATION_ACTION_EXECUTION",
+    data: { guildId, userId, action, reason, messageId, channelId, executedAt: new Date().toISOString() },
+  });
+  const now = Date.now();
+  await Promise.all([
+    redisPub.publish(`gateway:guild:${guildId}`, payload),
+    redisPub.zadd(`guild_events:${guildId}`, now, `${now}:${payload}`),
+    redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", now - 60000),
+  ]);
 }

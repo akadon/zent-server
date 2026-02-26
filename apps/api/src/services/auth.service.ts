@@ -1,10 +1,9 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import { eq } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { env } from "../config/env.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { redis } from "../config/redis.js";
+import { userRepository } from "../repositories/user.repository.js";
 
 const SALT_ROUNDS = 12;
 const TOKEN_EXPIRY = "7d";
@@ -48,69 +47,32 @@ export function verifyMfaTicket(ticket: string): TokenPayload {
 
 export async function register(email: string, username: string, password: string) {
   // Check existing
-  const existingEmail = await db
-    .select({ id: schema.users.id })
-    .from(schema.users)
-    .where(eq(schema.users.email, email.toLowerCase()))
-    .limit(1);
-
-  if (existingEmail.length > 0) {
+  const existingEmail = await userRepository.findByEmail(email.toLowerCase());
+  if (existingEmail) {
     throw new ApiError(409, "Email already registered");
   }
 
-  const existingUsername = await db
-    .select({ id: schema.users.id })
-    .from(schema.users)
-    .where(eq(schema.users.username, username))
-    .limit(1);
-
-  if (existingUsername.length > 0) {
+  const existingUsername = await userRepository.findByUsername(username);
+  if (existingUsername) {
     throw new ApiError(409, "Username taken");
   }
 
   const id = generateSnowflake();
   const passwordHash = await hashPassword(password);
 
-  await db
-    .insert(schema.users)
-    .values({
-      id,
-      email: email.toLowerCase(),
-      username,
-      passwordHash,
-    });
+  const user = await userRepository.create({
+    id,
+    email: email.toLowerCase(),
+    username,
+    passwordHash,
+  });
 
-  const [user] = await db
-    .select({
-      id: schema.users.id,
-      username: schema.users.username,
-      displayName: schema.users.displayName,
-      email: schema.users.email,
-      avatar: schema.users.avatar,
-      banner: schema.users.banner,
-      bio: schema.users.bio,
-      status: schema.users.status,
-      customStatus: schema.users.customStatus,
-      mfaEnabled: schema.users.mfaEnabled,
-      verified: schema.users.verified,
-      flags: schema.users.flags,
-      premiumType: schema.users.premiumType,
-      locale: schema.users.locale,
-      createdAt: schema.users.createdAt,
-    })
-    .from(schema.users)
-    .where(eq(schema.users.id, id));
-
-  const token = generateToken(user!.id);
-  return { token, user: { ...user!, createdAt: user!.createdAt.toISOString() } };
+  const token = generateToken(user.id);
+  return { token, user: { ...user, createdAt: user.createdAt.toISOString() } };
 }
 
 export async function login(email: string, password: string) {
-  const [user] = await db
-    .select()
-    .from(schema.users)
-    .where(eq(schema.users.email, email.toLowerCase()))
-    .limit(1);
+  const user = await userRepository.findByEmail(email.toLowerCase());
 
   if (!user) {
     throw new ApiError(401, "Invalid email or password");
@@ -169,33 +131,13 @@ export async function getUserById(userId: string) {
     return parsed;
   }
 
-  const [user] = await db
-    .select({
-      id: schema.users.id,
-      username: schema.users.username,
-      displayName: schema.users.displayName,
-      email: schema.users.email,
-      avatar: schema.users.avatar,
-      banner: schema.users.banner,
-      bio: schema.users.bio,
-      status: schema.users.status,
-      customStatus: schema.users.customStatus,
-      mfaEnabled: schema.users.mfaEnabled,
-      verified: schema.users.verified,
-      flags: schema.users.flags,
-      premiumType: schema.users.premiumType,
-      locale: schema.users.locale,
-      createdAt: schema.users.createdAt,
-    })
-    .from(schema.users)
-    .where(eq(schema.users.id, userId))
-    .limit(1);
+  const user = await userRepository.findById(userId);
 
   if (user) {
     await redis.set(cacheKey, JSON.stringify(user), "EX", USER_CACHE_TTL);
   }
 
-  return user ?? null;
+  return user;
 }
 
 export async function invalidateUserCache(userId: string) {

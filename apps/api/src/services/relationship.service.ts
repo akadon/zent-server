@@ -1,8 +1,9 @@
-import { eq, and, or, inArray, ilike } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
 import { ChannelType } from "@yxc/types";
+import { relationshipRepository } from "../repositories/relationship.repository.js";
+import { channelRepository } from "../repositories/channel.repository.js";
+import { userRepository } from "../repositories/user.repository.js";
 
 // Relationship types: 1=friend, 2=blocked, 3=incoming_request, 4=outgoing_request
 
@@ -10,16 +11,7 @@ export async function sendFriendRequest(userId: string, targetId: string) {
   if (userId === targetId) throw new ApiError(400, "Cannot friend yourself");
 
   // Check if already related
-  const [existing] = await db
-    .select()
-    .from(schema.relationships)
-    .where(
-      and(
-        eq(schema.relationships.userId, userId),
-        eq(schema.relationships.targetId, targetId)
-      )
-    )
-    .limit(1);
+  const existing = await relationshipRepository.findByUserAndTarget(userId, targetId);
 
   if (existing) {
     if (existing.type === 1) throw new ApiError(400, "Already friends");
@@ -28,203 +20,53 @@ export async function sendFriendRequest(userId: string, targetId: string) {
   }
 
   // Check if target has a pending request from us (accept it)
-  const [incomingFromTarget] = await db
-    .select()
-    .from(schema.relationships)
-    .where(
-      and(
-        eq(schema.relationships.userId, targetId),
-        eq(schema.relationships.targetId, userId),
-        eq(schema.relationships.type, 4) // target sent us a request
-      )
-    )
-    .limit(1);
+  const incomingFromTarget = await relationshipRepository.findByUserAndTargetWithType(targetId, userId, 4);
 
   if (incomingFromTarget) {
     // Accept: convert both sides to friends
-    await db.transaction(async (tx) => {
-      await tx
-        .update(schema.relationships)
-        .set({ type: 1 })
-        .where(
-          and(
-            eq(schema.relationships.userId, targetId),
-            eq(schema.relationships.targetId, userId)
-          )
-        );
-
-      // Replace incoming with friend
-      if (existing) {
-        await tx
-          .update(schema.relationships)
-          .set({ type: 1 })
-          .where(
-            and(
-              eq(schema.relationships.userId, userId),
-              eq(schema.relationships.targetId, targetId)
-            )
-          );
-      } else {
-        await tx.insert(schema.relationships).values({
-          userId,
-          targetId,
-          type: 1,
-        });
-      }
-    });
-
+    await relationshipRepository.acceptFriendRequest(userId, targetId, !!existing);
     return { type: 1, accepted: true };
   }
 
   // Create outgoing request (4) for sender, incoming (3) for receiver
-  await db.transaction(async (tx) => {
-    await tx
-      .insert(schema.relationships)
-      .values({ userId, targetId, type: 4 })
-      .onConflictDoUpdate({
-        target: [schema.relationships.userId, schema.relationships.targetId],
-        set: { type: 4 },
-      });
-
-    await tx
-      .insert(schema.relationships)
-      .values({ userId: targetId, targetId: userId, type: 3 })
-      .onConflictDoUpdate({
-        target: [schema.relationships.userId, schema.relationships.targetId],
-        set: { type: 3 },
-      });
-  });
+  await relationshipRepository.sendFriendRequest(userId, targetId);
 
   return { type: 4, accepted: false };
 }
 
 export async function acceptFriendRequest(userId: string, targetId: string) {
-  const [incoming] = await db
-    .select()
-    .from(schema.relationships)
-    .where(
-      and(
-        eq(schema.relationships.userId, userId),
-        eq(schema.relationships.targetId, targetId),
-        eq(schema.relationships.type, 3) // incoming request
-      )
-    )
-    .limit(1);
+  const incoming = await relationshipRepository.findByUserAndTargetWithType(userId, targetId, 3);
 
   if (!incoming) throw new ApiError(404, "No pending friend request");
 
-  await db.transaction(async (tx) => {
-    await tx
-      .update(schema.relationships)
-      .set({ type: 1 })
-      .where(
-        and(
-          eq(schema.relationships.userId, userId),
-          eq(schema.relationships.targetId, targetId)
-        )
-      );
-    await tx
-      .update(schema.relationships)
-      .set({ type: 1 })
-      .where(
-        and(
-          eq(schema.relationships.userId, targetId),
-          eq(schema.relationships.targetId, userId)
-        )
-      );
-  });
+  await relationshipRepository.acceptBothSides(userId, targetId);
 }
 
 export async function removeFriend(userId: string, targetId: string) {
-  await db.transaction(async (tx) => {
-    await tx
-      .delete(schema.relationships)
-      .where(
-        and(
-          eq(schema.relationships.userId, userId),
-          eq(schema.relationships.targetId, targetId)
-        )
-      );
-    await tx
-      .delete(schema.relationships)
-      .where(
-        and(
-          eq(schema.relationships.userId, targetId),
-          eq(schema.relationships.targetId, userId)
-        )
-      );
-  });
+  await relationshipRepository.removeBothSides(userId, targetId);
 }
 
 export async function blockUser(userId: string, targetId: string) {
   if (userId === targetId) throw new ApiError(400, "Cannot block yourself");
 
-  await db.transaction(async (tx) => {
-    // Remove any existing relationship from both sides
-    await tx
-      .delete(schema.relationships)
-      .where(
-        and(
-          eq(schema.relationships.userId, targetId),
-          eq(schema.relationships.targetId, userId)
-        )
-      );
-
-    // Upsert block
-    await tx
-      .insert(schema.relationships)
-      .values({ userId, targetId, type: 2 })
-      .onConflictDoUpdate({
-        target: [schema.relationships.userId, schema.relationships.targetId],
-        set: { type: 2 },
-      });
-  });
+  await relationshipRepository.blockUser(userId, targetId);
 }
 
 export async function unblockUser(userId: string, targetId: string) {
-  const [existing] = await db
-    .select()
-    .from(schema.relationships)
-    .where(
-      and(
-        eq(schema.relationships.userId, userId),
-        eq(schema.relationships.targetId, targetId),
-        eq(schema.relationships.type, 2)
-      )
-    )
-    .limit(1);
+  const existing = await relationshipRepository.findByUserAndTargetWithType(userId, targetId, 2);
 
   if (!existing) throw new ApiError(404, "User is not blocked");
 
-  await db
-    .delete(schema.relationships)
-    .where(
-      and(
-        eq(schema.relationships.userId, userId),
-        eq(schema.relationships.targetId, targetId)
-      )
-    );
+  await relationshipRepository.delete(userId, targetId);
 }
 
 export async function getRelationships(userId: string) {
-  const rels = await db
-    .select()
-    .from(schema.relationships)
-    .where(eq(schema.relationships.userId, userId));
+  const rels = await relationshipRepository.findOutgoingByUserId(userId);
 
   if (rels.length === 0) return [];
 
   const targetIds = rels.map((r) => r.targetId);
-  const users = await db
-    .select({
-      id: schema.users.id,
-      username: schema.users.username,
-      displayName: schema.users.displayName,
-      avatar: schema.users.avatar,
-      status: schema.users.status,
-    })
-    .from(schema.users)
-    .where(inArray(schema.users.id, targetIds));
+  const users = await userRepository.findPublicByIds(targetIds);
 
   const userMap = new Map(users.map((u) => [u.id, u]));
 
@@ -241,83 +83,40 @@ export async function getRelationships(userId: string) {
 
 export async function getOrCreateDMChannel(userId: string, recipientId: string) {
   // Find existing DM channel between the two users
-  const userDMs = await db
-    .select({ channelId: schema.dmChannels.channelId })
-    .from(schema.dmChannels)
-    .where(eq(schema.dmChannels.userId, userId));
+  const userDMChannelIds = await channelRepository.findDMChannelIdsByUserId(userId);
 
-  for (const dm of userDMs) {
-    const [recipientDM] = await db
-      .select()
-      .from(schema.dmChannels)
-      .where(
-        and(
-          eq(schema.dmChannels.channelId, dm.channelId),
-          eq(schema.dmChannels.userId, recipientId)
-        )
-      )
-      .limit(1);
+  for (const channelId of userDMChannelIds) {
+    const recipientDM = await channelRepository.findDMRecipient(channelId, recipientId);
 
     if (recipientDM) {
-      const channel = await db
-        .select()
-        .from(schema.channels)
-        .where(eq(schema.channels.id, dm.channelId))
-        .limit(1);
-      if (channel[0] && channel[0].type === ChannelType.DM) {
-        return { ...channel[0], createdAt: channel[0].createdAt.toISOString() };
+      const channel = await channelRepository.findById(channelId);
+      if (channel && channel.type === ChannelType.DM) {
+        return { ...channel, createdAt: channel.createdAt.toISOString() };
       }
     }
   }
 
   // Create new DM channel
   const channelId = generateSnowflake();
-  await db.transaction(async (tx) => {
-    await tx.insert(schema.channels).values({
-      id: channelId,
-      type: ChannelType.DM,
-      name: null,
-      position: 0,
-    });
+  await channelRepository.createDMChannel(channelId, ChannelType.DM, [userId, recipientId]);
 
-    await tx.insert(schema.dmChannels).values([
-      { channelId, userId },
-      { channelId, userId: recipientId },
-    ]);
-  });
-
-  const [channel] = await db
-    .select()
-    .from(schema.channels)
-    .where(eq(schema.channels.id, channelId))
-    .limit(1);
+  const channel = await channelRepository.findById(channelId);
 
   return { ...channel!, createdAt: channel!.createdAt.toISOString() };
 }
 
 export async function getUserDMChannels(userId: string) {
-  const dmEntries = await db
-    .select({ channelId: schema.dmChannels.channelId })
-    .from(schema.dmChannels)
-    .where(eq(schema.dmChannels.userId, userId));
+  const channelIds = await channelRepository.findDMChannelIdsByUserId(userId);
 
-  if (dmEntries.length === 0) return [];
-
-  const channelIds = dmEntries.map((e) => e.channelId);
+  if (channelIds.length === 0) return [];
 
   // Batch fetch all channels
-  const channelList = await db
-    .select()
-    .from(schema.channels)
-    .where(inArray(schema.channels.id, channelIds));
+  const channelList = await channelRepository.findByIds(channelIds);
 
   const channelMap = new Map(channelList.map((c) => [c.id, c]));
 
   // Batch fetch all dm_channel rows for these channels (to find recipients)
-  const allDmRows = await db
-    .select({ channelId: schema.dmChannels.channelId, userId: schema.dmChannels.userId })
-    .from(schema.dmChannels)
-    .where(inArray(schema.dmChannels.channelId, channelIds));
+  const allDmRows = await channelRepository.findDMParticipantsByChannelIds(channelIds);
 
   // Collect all recipient user IDs (excluding self)
   const recipientUserIds = new Set<string>();
@@ -332,16 +131,7 @@ export async function getUserDMChannels(userId: string) {
 
   // Batch fetch all recipient users
   const userList = recipientUserIds.size > 0
-    ? await db
-        .select({
-          id: schema.users.id,
-          username: schema.users.username,
-          displayName: schema.users.displayName,
-          avatar: schema.users.avatar,
-          status: schema.users.status,
-        })
-        .from(schema.users)
-        .where(inArray(schema.users.id, [...recipientUserIds]))
+    ? await userRepository.findPublicByIds([...recipientUserIds])
     : [];
 
   const userMap = new Map(userList.map((u) => [u.id, u]));

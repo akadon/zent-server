@@ -1,11 +1,12 @@
-import { eq } from "drizzle-orm";
-import { db, schema, SerializedGuild } from "../db/index.js";
-import { generateSnowflake } from "@yxc/snowflake";
+import type { SerializedGuild } from "../db/index.js";
 import { ApiError } from "./auth.service.js";
 import * as guildService from "./guild.service.js";
 import * as channelService from "./channel.service.js";
 import * as roleService from "./role.service.js";
 import crypto from "crypto";
+import { guildTemplateRepository } from "../repositories/guild-template.repository.js";
+import { guildRepository } from "../repositories/guild.repository.js";
+import { permissionRepository } from "../repositories/permission.repository.js";
 
 export interface GuildTemplate {
   code: string;
@@ -36,10 +37,7 @@ async function serializeGuild(guildId: string): Promise<SerializedGuild> {
   // Get permission overwrites for each channel
   const channelsWithOverwrites = await Promise.all(
     channels.map(async (channel) => {
-      const overwrites = await db
-        .select()
-        .from(schema.permissionOverwrites)
-        .where(eq(schema.permissionOverwrites.channelId, channel.id));
+      const overwrites = await permissionRepository.findOverwritesByChannelId(channel.id);
 
       return {
         id: channel.id,
@@ -100,22 +98,14 @@ export async function createTemplate(
   const code = generateTemplateCode();
   const serializedGuild = await serializeGuild(guildId);
 
-  await db
-    .insert(schema.guildTemplates)
-    .values({
-      code,
-      guildId,
-      name,
-      description,
-      creatorId,
-      serializedGuild,
-    });
-
-  const [template] = await db
-    .select()
-    .from(schema.guildTemplates)
-    .where(eq(schema.guildTemplates.code, code))
-    .limit(1);
+  const template = await guildTemplateRepository.create({
+    code,
+    guildId,
+    name,
+    description,
+    creatorId,
+    serializedGuild,
+  });
 
   if (!template) {
     throw new ApiError(500, "Failed to create template");
@@ -126,24 +116,12 @@ export async function createTemplate(
 
 // Get a template by code
 export async function getTemplate(code: string): Promise<GuildTemplate | null> {
-  const [template] = await db
-    .select()
-    .from(schema.guildTemplates)
-    .where(eq(schema.guildTemplates.code, code))
-    .limit(1);
-
-  return template ?? null;
+  return guildTemplateRepository.findByCode(code);
 }
 
 // Get a guild's template
 export async function getGuildTemplate(guildId: string): Promise<GuildTemplate | null> {
-  const [template] = await db
-    .select()
-    .from(schema.guildTemplates)
-    .where(eq(schema.guildTemplates.guildId, guildId))
-    .limit(1);
-
-  return template ?? null;
+  return guildTemplateRepository.findByGuildId(guildId);
 }
 
 // Sync a template with its source guild
@@ -155,16 +133,10 @@ export async function syncTemplate(code: string): Promise<GuildTemplate> {
 
   const serializedGuild = await serializeGuild(template.guildId);
 
-  await db
-    .update(schema.guildTemplates)
-    .set({
-      serializedGuild,
-      updatedAt: new Date(),
-      isDirty: false,
-    })
-    .where(eq(schema.guildTemplates.code, code));
-
-  return (await getTemplate(code))!;
+  return guildTemplateRepository.update(code, {
+    serializedGuild,
+    isDirty: false,
+  });
 }
 
 // Update a template
@@ -177,20 +149,12 @@ export async function updateTemplate(
     throw new ApiError(404, "Template not found");
   }
 
-  await db
-    .update(schema.guildTemplates)
-    .set({
-      ...updates,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.guildTemplates.code, code));
-
-  return (await getTemplate(code))!;
+  return guildTemplateRepository.update(code, updates);
 }
 
 // Delete a template
 export async function deleteTemplate(code: string): Promise<void> {
-  await db.delete(schema.guildTemplates).where(eq(schema.guildTemplates.code, code));
+  await guildTemplateRepository.delete(code);
 }
 
 // Create a guild from a template
@@ -212,15 +176,12 @@ export async function createGuildFromTemplate(
   }
 
   // Apply template settings
-  await db
-    .update(schema.guilds)
-    .set({
-      verificationLevel: template.serializedGuild.verificationLevel,
-      defaultMessageNotifications: template.serializedGuild.defaultMessageNotifications,
-      explicitContentFilter: template.serializedGuild.explicitContentFilter,
-      preferredLocale: template.serializedGuild.preferredLocale,
-    })
-    .where(eq(schema.guilds.id, guild.id));
+  await guildRepository.update(guild.id, {
+    verificationLevel: template.serializedGuild.verificationLevel,
+    defaultMessageNotifications: template.serializedGuild.defaultMessageNotifications,
+    explicitContentFilter: template.serializedGuild.explicitContentFilter,
+    preferredLocale: template.serializedGuild.preferredLocale,
+  });
 
   // Create ID mapping for roles and channels
   const roleIdMap = new Map<string, string>();
@@ -233,10 +194,8 @@ export async function createGuildFromTemplate(
       roleIdMap.set(roleData.id, guild.id);
 
       // Update @everyone permissions
-      await db
-        .update(schema.roles)
-        .set({ permissions: roleData.permissions })
-        .where(eq(schema.roles.id, guild.id));
+      const { roleRepository } = await import("../repositories/role.repository.js");
+      await roleRepository.update(guild.id, { permissions: roleData.permissions });
     } else {
       const newRole = await roleService.createRole(guild.id, {
         name: roleData.name,
@@ -294,7 +253,7 @@ export async function createGuildFromTemplate(
       for (const overwrite of channelData.permissionOverwrites) {
         // Map old role/channel ID to new ID
         const targetId = roleIdMap.get(overwrite.id) ?? overwrite.id;
-        await db.insert(schema.permissionOverwrites).values({
+        await permissionRepository.createOverwrite({
           channelId: newChannel.id,
           targetId,
           targetType: overwrite.type,
@@ -309,18 +268,12 @@ export async function createGuildFromTemplate(
   if (template.serializedGuild.systemChannelId) {
     const newSystemChannelId = channelIdMap.get(template.serializedGuild.systemChannelId);
     if (newSystemChannelId) {
-      await db
-        .update(schema.guilds)
-        .set({ systemChannelId: newSystemChannelId })
-        .where(eq(schema.guilds.id, guild.id));
+      await guildRepository.update(guild.id, { systemChannelId: newSystemChannelId });
     }
   }
 
   // Increment usage count
-  await db
-    .update(schema.guildTemplates)
-    .set({ usageCount: template.usageCount + 1 })
-    .where(eq(schema.guildTemplates.code, code));
+  await guildTemplateRepository.incrementUsageCount(code, template.usageCount);
 
   return { guildId: guild.id };
 }

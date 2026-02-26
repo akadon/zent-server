@@ -3,6 +3,7 @@ import type { Server as HttpServer } from "http";
 import { createAdapter } from "@socket.io/redis-adapter";
 import Redis from "ioredis";
 import { env } from "../config/env.js";
+import { config } from "../config/config.js";
 import { redisPub, redisSub, redis } from "../config/redis.js";
 import { verifyToken, getUserById } from "../services/auth.service.js";
 import { getUserGuilds } from "../services/guild.service.js";
@@ -20,8 +21,8 @@ import type {
 } from "@yxc/gateway-types";
 import { GatewayIntentBits } from "@yxc/gateway-types";
 import crypto from "crypto";
-import { eq, and, inArray, or, ilike, sql } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
+import { memberRepository } from "../repositories/member.repository.js";
+import { userRepository } from "../repositories/user.repository.js";
 
 const HEARTBEAT_INTERVAL = 41250; // ~41s
 const PRESENCE_TTL = 300; // 5 minutes
@@ -213,7 +214,7 @@ export function createGateway(httpServer: HttpServer) {
   const io = new SocketIOServer(httpServer, {
     path: "/gateway",
     cors: {
-      origin: env.CORS_ORIGIN.split(","),
+      origin: config.cors.origins,
       methods: ["GET", "POST"],
     },
     transports: ["websocket", "polling"],
@@ -641,14 +642,14 @@ export function createGateway(httpServer: HttpServer) {
         suppress: false,
       };
 
-      // Forward to zent-voice if configured
-      if (env.VOICE_SERVICE_URL) {
+      // Forward to zent-stream if configured
+      if (config.stream.url) {
         try {
           const headers: Record<string, string> = { "Content-Type": "application/json" };
-          if (env.VOICE_INTERNAL_KEY) headers["x-internal-key"] = env.VOICE_INTERNAL_KEY;
+          if (config.stream.internalKey) headers["x-internal-key"] = config.stream.internalKey;
 
           if (channelId) {
-            const res = await fetch(`${env.VOICE_SERVICE_URL}/api/voice/${guildId}/${channelId}/join`, {
+            const res = await fetch(`${config.stream.url}/api/voice/${guildId}/${channelId}/join`, {
               method: "POST",
               headers,
               body: JSON.stringify({
@@ -663,17 +664,20 @@ export function createGateway(httpServer: HttpServer) {
               const body = await res.json() as { livekitToken?: string; livekitUrl?: string };
               if (body.livekitToken && body.livekitUrl) {
                 // Dispatch to all sessions of this user via Redis
-                await redisPub.publish(
-                  `gateway:user:${session.userId}`,
-                  JSON.stringify({
-                    event: "VOICE_SERVER_UPDATE",
-                    data: { guildId, channelId, token: body.livekitToken, endpoint: body.livekitUrl },
-                  })
-                );
+                const vsuPayload = JSON.stringify({
+                  event: "VOICE_SERVER_UPDATE",
+                  data: { guildId, channelId, token: body.livekitToken, endpoint: body.livekitUrl },
+                });
+                const vsuNow = Date.now();
+                await Promise.all([
+                  redisPub.publish(`gateway:user:${session.userId}`, vsuPayload),
+                  redisPub.zadd(`user_events:${session.userId}`, vsuNow, `${vsuNow}:${vsuPayload}`),
+                  redisPub.zremrangebyscore(`user_events:${session.userId}`, "-inf", vsuNow - 60000),
+                ]);
               }
             }
           } else {
-            await fetch(`${env.VOICE_SERVICE_URL}/api/voice/${guildId}/leave`, {
+            await fetch(`${config.stream.url}/api/voice/${guildId}/leave`, {
               method: "POST",
               headers,
               body: JSON.stringify({ userId: session.userId }),
@@ -684,13 +688,13 @@ export function createGateway(httpServer: HttpServer) {
         }
       }
 
-      await redisPub.publish(
-        `gateway:guild:${guildId}`,
-        JSON.stringify({
-          event: "VOICE_STATE_UPDATE",
-          data: voiceState,
-        })
-      );
+      const vsPayload = JSON.stringify({ event: "VOICE_STATE_UPDATE", data: voiceState });
+      const vsNow = Date.now();
+      await Promise.all([
+        redisPub.publish(`gateway:guild:${guildId}`, vsPayload),
+        redisPub.zadd(`guild_events:${guildId}`, vsNow, `${vsNow}:${vsPayload}`),
+        redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", vsNow - 60000),
+      ]);
     }
 
     async function handleHeartbeat(
@@ -720,40 +724,11 @@ export function createGateway(httpServer: HttpServer) {
       let members: any[] = [];
 
       if (data.userIds && data.userIds.length > 0) {
-        // Batch fetch specific members
         const userIds = data.userIds.slice(0, 100);
-        const memberRows = await db
-          .select({
-            member: schema.members,
-            user: {
-              id: schema.users.id,
-              username: schema.users.username,
-              displayName: schema.users.displayName,
-              avatar: schema.users.avatar,
-              status: schema.users.status,
-            },
-          })
-          .from(schema.members)
-          .leftJoin(schema.users, eq(schema.members.userId, schema.users.id))
-          .where(
-            and(
-              eq(schema.members.guildId, data.guildId),
-              inArray(schema.members.userId, userIds)
-            )
-          );
+        const memberRows = await memberRepository.findWithUserByGuildAndUserIds(data.guildId, userIds);
 
-        const foundUserIds = memberRows.map((r) => r.member.userId);
-        const allRoles = foundUserIds.length > 0
-          ? await db
-              .select({ userId: schema.memberRoles.userId, roleId: schema.memberRoles.roleId })
-              .from(schema.memberRoles)
-              .where(
-                and(
-                  eq(schema.memberRoles.guildId, data.guildId),
-                  inArray(schema.memberRoles.userId, foundUserIds)
-                )
-              )
-          : [];
+        const foundUserIds = memberRows.map((r: any) => r.member.userId);
+        const allRoles = await memberRepository.getMemberRolesByGuildAndUserIds(data.guildId, foundUserIds);
 
         const roleMap = new Map<string, string[]>();
         for (const r of allRoles) {
@@ -762,7 +737,7 @@ export function createGateway(httpServer: HttpServer) {
           roleMap.set(r.userId, list);
         }
 
-        members = memberRows.map((row) => ({
+        members = memberRows.map((row: any) => ({
           ...row.member,
           joinedAt: row.member.joinedAt.toISOString(),
           premiumSince: row.member.premiumSince?.toISOString() ?? null,
@@ -771,37 +746,10 @@ export function createGateway(httpServer: HttpServer) {
           roles: roleMap.get(row.member.userId) ?? [],
         }));
       } else if (data.query !== undefined) {
-        // DB-side LIKE search
-        const queryPattern = `${data.query}%`;
         const limit = data.limit ?? 1;
+        const memberRows = await memberRepository.searchByGuildAndQuery(data.guildId, data.query, limit);
 
-        const memberRows = await db
-          .select({
-            member: schema.members,
-            user: {
-              id: schema.users.id,
-              username: schema.users.username,
-              displayName: schema.users.displayName,
-              avatar: schema.users.avatar,
-              status: schema.users.status,
-            },
-          })
-          .from(schema.members)
-          .leftJoin(schema.users, eq(schema.members.userId, schema.users.id))
-          .where(
-            and(
-              eq(schema.members.guildId, data.guildId),
-              data.query === ""
-                ? undefined
-                : or(
-                    ilike(schema.users.username, queryPattern),
-                    ilike(schema.members.nickname, queryPattern)
-                  )
-            )
-          )
-          .limit(limit);
-
-        members = memberRows.map((row) => ({
+        members = memberRows.map((row: any) => ({
           ...row.member,
           joinedAt: row.member.joinedAt.toISOString(),
           premiumSince: row.member.premiumSince?.toISOString() ?? null,
@@ -894,35 +842,13 @@ async function setPresence(
   await redis.expire(presenceKey, PRESENCE_TTL);
 
   // Update DB - user status
-  await db
-    .update(schema.users)
-    .set({
-      status: status as any,
-      customStatus,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.users.id, userId));
+  await userRepository.updatePresence(userId, status, customStatus);
 
   // Persist activities to userActivities table
   if (activities.length > 0) {
-    await db
-      .insert(schema.userActivities)
-      .values({
-        userId,
-        activities: activities as any,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [schema.userActivities.userId],
-        set: {
-          activities: activities as any,
-          updatedAt: new Date(),
-        },
-      });
+    await userRepository.upsertActivities(userId, activities as any);
   } else {
-    await db
-      .delete(schema.userActivities)
-      .where(eq(schema.userActivities.userId, userId));
+    await userRepository.deleteActivities(userId);
   }
 }
 

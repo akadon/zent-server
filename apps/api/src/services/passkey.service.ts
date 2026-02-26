@@ -1,8 +1,7 @@
-import { eq, and } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
 import { redis } from "../config/redis.js";
+import { passkeyRepository } from "../repositories/passkey.repository.js";
 import crypto from "crypto";
 
 export interface PasskeyCredential {
@@ -37,22 +36,13 @@ export async function validateChallenge(challenge: string): Promise<string | nul
 }
 
 export async function getUserCredentials(userId: string): Promise<PasskeyCredential[]> {
-  return db
-    .select()
-    .from(schema.passkeyCredentials)
-    .where(eq(schema.passkeyCredentials.userId, userId));
+  return passkeyRepository.findByUserId(userId);
 }
 
 export async function getCredentialByCredentialId(
   credentialId: string
 ): Promise<(PasskeyCredential & { userId: string }) | null> {
-  const [credential] = await db
-    .select()
-    .from(schema.passkeyCredentials)
-    .where(eq(schema.passkeyCredentials.credentialId, credentialId))
-    .limit(1);
-
-  return credential ?? null;
+  return passkeyRepository.findByCredentialId(credentialId);
 }
 
 export async function createCredential(
@@ -73,25 +63,18 @@ export async function createCredential(
 
   const id = generateSnowflake();
 
-  await db
-    .insert(schema.passkeyCredentials)
-    .values({
-      id,
-      userId,
-      credentialId: data.credentialId,
-      publicKey: data.publicKey,
-      counter: 0,
-      deviceType: data.deviceType ?? null,
-      transports: data.transports ?? null,
-      aaguid: data.aaguid ?? null,
-    });
+  await passkeyRepository.create({
+    id,
+    userId,
+    credentialId: data.credentialId,
+    publicKey: data.publicKey,
+    counter: 0,
+    deviceType: data.deviceType ?? null,
+    transports: data.transports ?? null,
+    aaguid: data.aaguid ?? null,
+  });
 
-  const [credential] = await db
-    .select()
-    .from(schema.passkeyCredentials)
-    .where(eq(schema.passkeyCredentials.id, id))
-    .limit(1);
-
+  const credential = await passkeyRepository.findById(id);
   if (!credential) {
     throw new ApiError(500, "Failed to create credential");
   }
@@ -102,50 +85,19 @@ export async function createCredential(
 export async function updateCredentialCounter(
   credentialId: string
 ): Promise<void> {
-  // First get current counter
-  const [current] = await db
-    .select({ counter: schema.passkeyCredentials.counter })
-    .from(schema.passkeyCredentials)
-    .where(eq(schema.passkeyCredentials.credentialId, credentialId))
-    .limit(1);
-
-  if (current) {
-    await db
-      .update(schema.passkeyCredentials)
-      .set({
-        counter: current.counter + 1,
-      })
-      .where(eq(schema.passkeyCredentials.credentialId, credentialId));
-  }
+  await passkeyRepository.incrementCounterByCredentialId(credentialId);
 }
 
 export async function deleteCredential(
   userId: string,
   credentialId: string
 ): Promise<void> {
-  const [existing] = await db
-    .select()
-    .from(schema.passkeyCredentials)
-    .where(
-      and(
-        eq(schema.passkeyCredentials.userId, userId),
-        eq(schema.passkeyCredentials.credentialId, credentialId)
-      )
-    )
-    .limit(1);
-
-  if (!existing) {
+  const existing = await passkeyRepository.findByCredentialId(credentialId);
+  if (!existing || existing.userId !== userId) {
     throw new ApiError(404, "Passkey not found");
   }
 
-  await db
-    .delete(schema.passkeyCredentials)
-    .where(
-      and(
-        eq(schema.passkeyCredentials.userId, userId),
-        eq(schema.passkeyCredentials.credentialId, credentialId)
-      )
-    );
+  await passkeyRepository.deleteByUserAndCredentialId(userId, credentialId);
 }
 
 export async function authenticateWithCredential(

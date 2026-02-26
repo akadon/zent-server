@@ -1,11 +1,13 @@
-import { eq, and, inArray, count } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { DEFAULT_PERMISSIONS } from "@yxc/permissions";
 import { ApiError } from "./auth.service.js";
 import { ChannelType } from "@yxc/types";
 import { invalidateGuildPermissions } from "./permission.service.js";
 import { env } from "../config/env.js";
+import { guildRepository } from "../repositories/guild.repository.js";
+import { channelRepository } from "../repositories/channel.repository.js";
+import { memberRepository } from "../repositories/member.repository.js";
+import { roleRepository } from "../repositories/role.repository.js";
 
 async function fetchVoiceStates(guildId: string): Promise<any[]> {
   if (!env.VOICE_SERVICE_URL) return [];
@@ -29,9 +31,9 @@ export async function createGuild(ownerId: string, name: string, icon?: string) 
   const generalChannelId = generateSnowflake();
   const voiceChannelId = generateSnowflake();
 
-  await db.transaction(async (tx) => {
+  await guildRepository.transaction(async (tx) => {
     // Create guild
-    await tx.insert(schema.guilds).values({
+    await guildRepository.create(tx, {
       id: guildId,
       name,
       icon: icon ?? null,
@@ -40,7 +42,7 @@ export async function createGuild(ownerId: string, name: string, icon?: string) 
     });
 
     // Create @everyone role
-    await tx.insert(schema.roles).values({
+    await roleRepository.createInTx(tx, {
       id: everyoneRoleId,
       guildId,
       name: "@everyone",
@@ -49,7 +51,7 @@ export async function createGuild(ownerId: string, name: string, icon?: string) 
     });
 
     // Create default channels
-    await tx.insert(schema.channels).values([
+    await channelRepository.createMany(tx, [
       {
         id: generalChannelId,
         guildId,
@@ -67,7 +69,7 @@ export async function createGuild(ownerId: string, name: string, icon?: string) 
     ]);
 
     // Add owner as member
-    await tx.insert(schema.members).values({
+    await memberRepository.createInTx(tx, {
       userId: ownerId,
       guildId,
     });
@@ -77,18 +79,13 @@ export async function createGuild(ownerId: string, name: string, icon?: string) 
 }
 
 export async function getGuild(guildId: string) {
-  const [guild] = await db
-    .select()
-    .from(schema.guilds)
-    .where(eq(schema.guilds.id, guildId))
-    .limit(1);
-
+  const guild = await guildRepository.findById(guildId);
   if (!guild) return null;
 
-  const [guildChannels, guildRoles, memberCountResult, voiceStates] = await Promise.all([
-    db.select().from(schema.channels).where(eq(schema.channels.guildId, guildId)),
-    db.select().from(schema.roles).where(eq(schema.roles.guildId, guildId)),
-    db.select({ count: count() }).from(schema.members).where(eq(schema.members.guildId, guildId)),
+  const [guildChannels, guildRoles, memberCount, voiceStates] = await Promise.all([
+    channelRepository.findByGuildId(guildId),
+    roleRepository.findByGuildId(guildId),
+    guildRepository.getMemberCount(guildId),
     fetchVoiceStates(guildId),
   ]);
 
@@ -104,7 +101,7 @@ export async function getGuild(guildId: string) {
       ...r,
       createdAt: r.createdAt.toISOString(),
     })),
-    memberCount: memberCountResult[0]?.count ?? 0,
+    memberCount,
     voiceStates,
   };
 }
@@ -124,80 +121,41 @@ export async function updateGuild(
     rulesChannelId?: string;
   }
 ) {
-  const [guild] = await db
-    .select({ ownerId: schema.guilds.ownerId })
-    .from(schema.guilds)
-    .where(eq(schema.guilds.id, guildId))
-    .limit(1);
-
+  const guild = await guildRepository.findOwnerById(guildId);
   if (!guild) throw new ApiError(404, "Guild not found");
 
-  await db
-    .update(schema.guilds)
-    .set({ ...data, updatedAt: new Date() })
-    .where(eq(schema.guilds.id, guildId));
-
-  const [updated] = await db
-    .select()
-    .from(schema.guilds)
-    .where(eq(schema.guilds.id, guildId))
-    .limit(1);
+  const updated = await guildRepository.update(guildId, data);
 
   return {
-    ...updated!,
-    createdAt: updated!.createdAt.toISOString(),
-    updatedAt: updated!.updatedAt.toISOString(),
+    ...updated,
+    createdAt: updated.createdAt.toISOString(),
+    updatedAt: updated.updatedAt.toISOString(),
   };
 }
 
 export async function deleteGuild(guildId: string, userId: string) {
-  const [guild] = await db
-    .select({ ownerId: schema.guilds.ownerId })
-    .from(schema.guilds)
-    .where(eq(schema.guilds.id, guildId))
-    .limit(1);
-
+  const guild = await guildRepository.findOwnerById(guildId);
   if (!guild) throw new ApiError(404, "Guild not found");
   if (guild.ownerId !== userId) {
     throw new ApiError(403, "Only the owner can delete a guild");
   }
 
-  await db.delete(schema.guilds).where(eq(schema.guilds.id, guildId));
+  await guildRepository.delete(guildId);
 }
 
 export async function getUserGuilds(userId: string) {
-  const userMembers = await db
-    .select({ guildId: schema.members.guildId })
-    .from(schema.members)
-    .where(eq(schema.members.userId, userId));
-
+  const userMembers = await memberRepository.findGuildIdsByUserId(userId);
   if (userMembers.length === 0) return [];
 
   const guildIds = userMembers.map((m) => m.guildId);
 
-  // Batch fetch all guilds
-  const guilds = await db
-    .select()
-    .from(schema.guilds)
-    .where(inArray(schema.guilds.id, guildIds));
-
-  // Batch fetch all channels for these guilds
-  const allChannels = await db
-    .select()
-    .from(schema.channels)
-    .where(inArray(schema.channels.guildId, guildIds));
-
-  // Batch fetch all roles for these guilds
-  const allRoles = await db
-    .select()
-    .from(schema.roles)
-    .where(inArray(schema.roles.guildId, guildIds));
-
-  // Batch fetch all members for these guilds
-  const allMembers = await db
-    .select()
-    .from(schema.members)
-    .where(inArray(schema.members.guildId, guildIds));
+  // Batch fetch all data for these guilds
+  const [guilds, allChannels, allRoles, allMembers] = await Promise.all([
+    guildRepository.findByIds(guildIds),
+    channelRepository.findByGuildIds(guildIds),
+    roleRepository.findByGuildIds(guildIds),
+    memberRepository.findByGuildIds(guildIds),
+  ]);
 
   // Index by guildId
   const channelsByGuild = new Map<string, typeof allChannels>();
@@ -263,40 +221,21 @@ export async function getUserGuilds(userId: string) {
 }
 
 export async function transferOwnership(guildId: string, currentOwnerId: string, newOwnerId: string) {
-  const [guild] = await db
-    .select({ ownerId: schema.guilds.ownerId })
-    .from(schema.guilds)
-    .where(eq(schema.guilds.id, guildId))
-    .limit(1);
-
+  const guild = await guildRepository.findOwnerById(guildId);
   if (!guild) throw new ApiError(404, "Guild not found");
   if (guild.ownerId !== currentOwnerId) throw new ApiError(403, "Only the owner can transfer ownership");
 
-  await db
-    .update(schema.guilds)
-    .set({ ownerId: newOwnerId, updatedAt: new Date() })
-    .where(eq(schema.guilds.id, guildId));
+  const updated = await guildRepository.update(guildId, { ownerId: newOwnerId });
 
   await invalidateGuildPermissions(guildId);
 
-  const [updated] = await db
-    .select()
-    .from(schema.guilds)
-    .where(eq(schema.guilds.id, guildId))
-    .limit(1);
-
   return {
-    ...updated!,
-    createdAt: updated!.createdAt.toISOString(),
-    updatedAt: updated!.updatedAt.toISOString(),
+    ...updated,
+    createdAt: updated.createdAt.toISOString(),
+    updatedAt: updated.updatedAt.toISOString(),
   };
 }
 
 export async function isMember(userId: string, guildId: string): Promise<boolean> {
-  const [member] = await db
-    .select({ userId: schema.members.userId })
-    .from(schema.members)
-    .where(and(eq(schema.members.userId, userId), eq(schema.members.guildId, guildId)))
-    .limit(1);
-  return !!member;
+  return memberRepository.exists(userId, guildId);
 }
