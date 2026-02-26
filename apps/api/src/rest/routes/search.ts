@@ -3,13 +3,7 @@ import { z } from "zod";
 import { authMiddleware } from "../../middleware/auth.js";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { isMember } from "../../services/guild.service.js";
-import { db } from "../../db/index.js";
-import { messages, channels } from "../../db/schema.js";
-import { eq, and, ilike, lt, desc, sql } from "drizzle-orm";
-
-function escapeLike(str: string): string {
-  return str.replace(/[%_\\]/g, "\\$&");
-}
+import { searchRepository } from "../../repositories/search.repository.js";
 
 export default async function searchRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authMiddleware);
@@ -34,62 +28,20 @@ export default async function searchRoutes(app: FastifyInstance) {
       return reply.status(403).send({ message: "Not a member of this guild" });
     }
 
-    // Build conditions
-    const conditions = [
-      eq(channels.guildId, guildId),
-      eq(messages.channelId, channels.id),
-      ilike(messages.content, `%${escapeLike(query.q)}%`),
-    ];
+    const searchOptions = {
+      channelId: query.channelId,
+      authorId: query.authorId,
+      before: query.before,
+      limit: query.limit,
+    };
 
-    if (query.channelId) {
-      conditions.push(eq(messages.channelId, query.channelId));
-    }
-
-    if (query.authorId) {
-      conditions.push(eq(messages.authorId, query.authorId));
-    }
-
-    if (query.before) {
-      conditions.push(lt(messages.id, query.before));
-    }
-
-    // Get total count
-    const [countResult] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(messages)
-      .innerJoin(channels, eq(messages.channelId, channels.id))
-      .where(
-        and(
-          eq(channels.guildId, guildId),
-          ilike(messages.content, `%${escapeLike(query.q)}%`),
-          ...(query.channelId ? [eq(messages.channelId, query.channelId)] : []),
-          ...(query.authorId ? [eq(messages.authorId, query.authorId)] : []),
-        )
-      );
-
-    // Get results
-    const results = await db
-      .select({
-        id: messages.id,
-        channelId: messages.channelId,
-        authorId: messages.authorId,
-        content: messages.content,
-        type: messages.type,
-        flags: messages.flags,
-        tts: messages.tts,
-        mentionEveryone: messages.mentionEveryone,
-        pinned: messages.pinned,
-        editedTimestamp: messages.editedTimestamp,
-        referencedMessageId: messages.referencedMessageId,
-        webhookId: messages.webhookId,
-        nonce: messages.nonce,
-        createdAt: messages.createdAt,
-      })
-      .from(messages)
-      .innerJoin(channels, eq(messages.channelId, channels.id))
-      .where(and(...conditions))
-      .orderBy(desc(messages.id))
-      .limit(query.limit);
+    const [results, totalCount] = await Promise.all([
+      searchRepository.searchGuildMessages(guildId, query.q, searchOptions),
+      searchRepository.countGuildMessages(guildId, query.q, {
+        channelId: query.channelId,
+        authorId: query.authorId,
+      }),
+    ]);
 
     return reply.send({
       results: results.map((r) => ({
@@ -97,7 +49,7 @@ export default async function searchRoutes(app: FastifyInstance) {
         editedTimestamp: r.editedTimestamp?.toISOString() ?? null,
         createdAt: r.createdAt.toISOString(),
       })),
-      totalCount: countResult?.count ?? 0,
+      totalCount,
     });
   });
 }

@@ -1,12 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { authMiddleware } from "../../middleware/auth.js";
-import { db } from "../../db/index.js";
-import { users } from "../../db/schema.js";
-import { eq } from "drizzle-orm";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import crypto from "crypto";
 import { ApiError, generateToken, verifyPassword, verifyMfaTicket } from "../../services/auth.service.js";
+import { userRepository } from "../../repositories/user.repository.js";
 
 // Base32 encoding (RFC 4648)
 const BASE32_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -140,12 +138,7 @@ export async function mfaRoutes(app: FastifyInstance) {
     "/auth/mfa/setup",
     { preHandler: [authMiddleware, createRateLimiter("auth")] },
     async (request, reply) => {
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, request.userId))
-        .limit(1);
-
+      const user = await userRepository.findById(request.userId);
       if (!user) throw new ApiError(404, "User not found");
       if (user.mfaEnabled) throw new ApiError(400, "MFA is already enabled");
 
@@ -155,10 +148,7 @@ export async function mfaRoutes(app: FastifyInstance) {
       const uri = `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(user.email)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
 
       // Store pending secret server-side so /enable doesn't need to trust client
-      await db
-        .update(users)
-        .set({ mfaSecret: secret })
-        .where(eq(users.id, request.userId));
+      await userRepository.update(request.userId, { mfaSecret: secret });
 
       return reply.send({ secret, uri });
     }
@@ -171,12 +161,7 @@ export async function mfaRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const body = enableSchema.parse(request.body);
 
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, request.userId))
-        .limit(1);
-
+      const user = await userRepository.findById(request.userId);
       if (!user) throw new ApiError(404, "User not found");
       if (user.mfaEnabled) throw new ApiError(400, "MFA is already enabled");
       if (!user.mfaSecret) throw new ApiError(400, "Call /auth/mfa/setup first");
@@ -191,13 +176,10 @@ export async function mfaRoutes(app: FastifyInstance) {
       const backupCodes = generateBackupCodes();
       const hashedBackupCodes = backupCodes.map(hashBackupCode);
 
-      await db
-        .update(users)
-        .set({
-          mfaEnabled: true,
-          mfaBackupCodes: hashedBackupCodes,
-        })
-        .where(eq(users.id, request.userId));
+      await userRepository.update(request.userId, {
+        mfaEnabled: true,
+        mfaBackupCodes: hashedBackupCodes,
+      });
 
       return reply.send({
         enabled: true,
@@ -217,12 +199,7 @@ export async function mfaRoutes(app: FastifyInstance) {
       const ticketPayload = verifyMfaTicket(body.ticket);
       const userId = ticketPayload.userId;
 
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, userId))
-        .limit(1);
-
+      const user = await userRepository.findById(userId);
       if (!user) throw new ApiError(404, "User not found");
       if (!user.mfaEnabled || !user.mfaSecret) {
         throw new ApiError(400, "MFA is not enabled for this user");
@@ -243,10 +220,7 @@ export async function mfaRoutes(app: FastifyInstance) {
         // Remove used backup code
         const updatedCodes = [...backupCodes];
         updatedCodes.splice(backupIndex, 1);
-        await db
-          .update(users)
-          .set({ mfaBackupCodes: updatedCodes })
-          .where(eq(users.id, userId));
+        await userRepository.update(userId, { mfaBackupCodes: updatedCodes });
       }
 
       const token = generateToken(user.id);
@@ -262,12 +236,7 @@ export async function mfaRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const body = disableSchema.parse(request.body);
 
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, request.userId))
-        .limit(1);
-
+      const user = await userRepository.findById(request.userId);
       if (!user) throw new ApiError(404, "User not found");
       if (!user.mfaEnabled) throw new ApiError(400, "MFA is not enabled");
 
@@ -276,14 +245,11 @@ export async function mfaRoutes(app: FastifyInstance) {
         throw new ApiError(401, "Invalid password");
       }
 
-      await db
-        .update(users)
-        .set({
-          mfaEnabled: false,
-          mfaSecret: null,
-          mfaBackupCodes: null,
-        })
-        .where(eq(users.id, request.userId));
+      await userRepository.update(request.userId, {
+        mfaEnabled: false,
+        mfaSecret: null,
+        mfaBackupCodes: null,
+      });
 
       return reply.send({ disabled: true });
     }

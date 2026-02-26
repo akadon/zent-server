@@ -5,9 +5,11 @@ import * as relationshipService from "../../services/relationship.service.js";
 import * as userNotesService from "../../services/user-notes.service.js";
 import * as notificationService from "../../services/notification.service.js";
 import { ApiError, getUserById } from "../../services/auth.service.js";
-import { redisPub } from "../../config/redis.js";
-import { db, schema } from "../../db/index.js";
-import { eq, and, inArray } from "drizzle-orm";
+import { dispatchUser } from "../../utils/dispatch.js";
+import { memberRepository } from "../../repositories/member.repository.js";
+import { guildRepository } from "../../repositories/guild.repository.js";
+import { relationshipRepository } from "../../repositories/relationship.repository.js";
+import { userRepository } from "../../repositories/user.repository.js";
 
 export async function userRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authMiddleware);
@@ -34,20 +36,8 @@ export async function userRoutes(app: FastifyInstance) {
 
     // Dispatch to both users: target gets incoming (type 3), sender gets outgoing (type 4)
     await Promise.all([
-      redisPub.publish(
-        `gateway:user:${body.userId}`,
-        JSON.stringify({
-          event: "RELATIONSHIP_ADD",
-          data: { userId: request.userId, type: 3 },
-        })
-      ),
-      redisPub.publish(
-        `gateway:user:${request.userId}`,
-        JSON.stringify({
-          event: "RELATIONSHIP_ADD",
-          data: { userId: body.userId, type: 4 },
-        })
-      ),
+      dispatchUser(body.userId, "RELATIONSHIP_ADD", { userId: request.userId, type: 3 }),
+      dispatchUser(request.userId, "RELATIONSHIP_ADD", { userId: body.userId, type: 4 }),
     ]);
 
     // Notify target about the friend request
@@ -67,20 +57,8 @@ export async function userRoutes(app: FastifyInstance) {
 
     // Dispatch to both users: both become friends (type 1)
     await Promise.all([
-      redisPub.publish(
-        `gateway:user:${targetId}`,
-        JSON.stringify({
-          event: "RELATIONSHIP_ADD",
-          data: { userId: request.userId, type: 1 },
-        })
-      ),
-      redisPub.publish(
-        `gateway:user:${request.userId}`,
-        JSON.stringify({
-          event: "RELATIONSHIP_ADD",
-          data: { userId: targetId, type: 1 },
-        })
-      ),
+      dispatchUser(targetId, "RELATIONSHIP_ADD", { userId: request.userId, type: 1 }),
+      dispatchUser(request.userId, "RELATIONSHIP_ADD", { userId: targetId, type: 1 }),
     ]);
 
     return reply.status(204).send();
@@ -93,20 +71,8 @@ export async function userRoutes(app: FastifyInstance) {
 
     // Dispatch to both users
     await Promise.all([
-      redisPub.publish(
-        `gateway:user:${targetId}`,
-        JSON.stringify({
-          event: "RELATIONSHIP_REMOVE",
-          data: { userId: request.userId },
-        })
-      ),
-      redisPub.publish(
-        `gateway:user:${request.userId}`,
-        JSON.stringify({
-          event: "RELATIONSHIP_REMOVE",
-          data: { userId: targetId },
-        })
-      ),
+      dispatchUser(targetId, "RELATIONSHIP_REMOVE", { userId: request.userId }),
+      dispatchUser(request.userId, "RELATIONSHIP_REMOVE", { userId: targetId }),
     ]);
 
     return reply.status(204).send();
@@ -119,20 +85,8 @@ export async function userRoutes(app: FastifyInstance) {
 
     // Target sees relationship removed, blocker sees block (type 2)
     await Promise.all([
-      redisPub.publish(
-        `gateway:user:${targetId}`,
-        JSON.stringify({
-          event: "RELATIONSHIP_REMOVE",
-          data: { userId: request.userId },
-        })
-      ),
-      redisPub.publish(
-        `gateway:user:${request.userId}`,
-        JSON.stringify({
-          event: "RELATIONSHIP_ADD",
-          data: { userId: targetId, type: 2 },
-        })
-      ),
+      dispatchUser(targetId, "RELATIONSHIP_REMOVE", { userId: request.userId }),
+      dispatchUser(request.userId, "RELATIONSHIP_ADD", { userId: targetId, type: 2 }),
     ]);
 
     return reply.status(204).send();
@@ -144,13 +98,7 @@ export async function userRoutes(app: FastifyInstance) {
     await relationshipService.unblockUser(request.userId, targetId);
 
     // Blocker sees block removed
-    await redisPub.publish(
-      `gateway:user:${request.userId}`,
-      JSON.stringify({
-        event: "RELATIONSHIP_REMOVE",
-        data: { userId: targetId },
-      })
-    );
+    await dispatchUser(request.userId, "RELATIONSHIP_REMOVE", { userId: targetId });
 
     return reply.status(204).send();
   });
@@ -254,36 +202,30 @@ export async function userRoutes(app: FastifyInstance) {
 
     // Find mutual guilds: guilds where both users are members
     const [myGuilds, theirGuilds] = await Promise.all([
-      db.select({ guildId: schema.members.guildId }).from(schema.members).where(eq(schema.members.userId, request.userId)),
-      db.select({ guildId: schema.members.guildId }).from(schema.members).where(eq(schema.members.userId, userId)),
+      memberRepository.findGuildIdsByUserId(request.userId),
+      memberRepository.findGuildIdsByUserId(userId),
     ]);
     const theirGuildSet = new Set(theirGuilds.map((g) => g.guildId));
     const mutualGuildIds = myGuilds.map((g) => g.guildId).filter((id) => theirGuildSet.has(id));
 
     let mutualGuilds: Array<{ id: string; name: string; icon: string | null }> = [];
     if (mutualGuildIds.length > 0) {
-      mutualGuilds = await db
-        .select({ id: schema.guilds.id, name: schema.guilds.name, icon: schema.guilds.icon })
-        .from(schema.guilds)
-        .where(inArray(schema.guilds.id, mutualGuildIds));
+      const guilds = await guildRepository.findByIds(mutualGuildIds);
+      mutualGuilds = guilds.map((g) => ({ id: g.id, name: g.name, icon: g.icon }));
     }
 
     // Find mutual friends: users who are friends (type 1) with both request.userId and userId
     const [myFriends, theirFriends] = await Promise.all([
-      db.select({ targetId: schema.relationships.targetId }).from(schema.relationships)
-        .where(and(eq(schema.relationships.userId, request.userId), eq(schema.relationships.type, 1))),
-      db.select({ targetId: schema.relationships.targetId }).from(schema.relationships)
-        .where(and(eq(schema.relationships.userId, userId), eq(schema.relationships.type, 1))),
+      relationshipRepository.findFriendIds(request.userId),
+      relationshipRepository.findFriendIds(userId),
     ]);
     const theirFriendSet = new Set(theirFriends.map((f) => f.targetId));
     const mutualFriendIds = myFriends.map((f) => f.targetId).filter((id) => theirFriendSet.has(id));
 
     let mutualFriends: Array<{ id: string; username: string; avatar: string | null }> = [];
     if (mutualFriendIds.length > 0) {
-      mutualFriends = await db
-        .select({ id: schema.users.id, username: schema.users.username, avatar: schema.users.avatar })
-        .from(schema.users)
-        .where(inArray(schema.users.id, mutualFriendIds));
+      const users = await userRepository.findPublicByIds(mutualFriendIds);
+      mutualFriends = users.map((u) => ({ id: u.id, username: u.username, avatar: u.avatar }));
     }
 
     return reply.send({

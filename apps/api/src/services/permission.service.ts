@@ -1,8 +1,9 @@
-import { eq, and, inArray } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { computePermissions, PermissionsBitfield, type PermissionOverwrite, type RolePermission } from "@yxc/permissions";
 import { ApiError } from "./auth.service.js";
 import { redis, redisPub, redisSub } from "../config/redis.js";
+import { permissionRepository } from "../repositories/permission.repository.js";
+import { roleRepository } from "../repositories/role.repository.js";
+import { guildRepository } from "../repositories/guild.repository.js";
 
 // ── Two-Tier Permission Cache ──
 
@@ -165,36 +166,20 @@ export async function getGuildPermissions(
   guildId: string
 ): Promise<PermissionsBitfield> {
   return cachedPermissions(`${userId}:${guildId}`, async () => {
-    const [guild] = await db
-      .select({ ownerId: schema.guilds.ownerId })
-      .from(schema.guilds)
-      .where(eq(schema.guilds.id, guildId))
-      .limit(1);
+    const guild = await guildRepository.findOwnerById(guildId);
 
     if (!guild) throw new ApiError(404, "Guild not found");
 
-    const [everyoneRole] = await db
-      .select()
-      .from(schema.roles)
-      .where(and(eq(schema.roles.guildId, guildId), eq(schema.roles.name, "@everyone")))
-      .limit(1);
+    const everyoneRole = await roleRepository.findEveryoneRole(guildId);
 
     if (!everyoneRole) throw new ApiError(500, "Missing @everyone role");
 
-    const memberRoleRecords = await db
-      .select({ roleId: schema.memberRoles.roleId })
-      .from(schema.memberRoles)
-      .where(and(eq(schema.memberRoles.userId, userId), eq(schema.memberRoles.guildId, guildId)));
-
-    const roleIds = memberRoleRecords.map((r) => r.roleId);
-    let memberRoles: RolePermission[] = [];
-    if (roleIds.length > 0) {
-      const fetchedRoles = await db
-        .select({ id: schema.roles.id, permissions: schema.roles.permissions, position: schema.roles.position })
-        .from(schema.roles)
-        .where(inArray(schema.roles.id, roleIds));
-      memberRoles = fetchedRoles.map((r) => ({ id: r.id, permissions: BigInt(r.permissions), position: r.position }));
-    }
+    const fetchedRoles = await permissionRepository.findMemberRolesWithPermissions(userId, guildId);
+    const memberRoles: RolePermission[] = fetchedRoles.map((r) => ({
+      id: r.roleId,
+      permissions: BigInt(r.permissions),
+      position: r.position,
+    }));
 
     return computePermissions({
       userId,
@@ -218,41 +203,22 @@ export async function getChannelPermissions(
   channelId: string
 ): Promise<PermissionsBitfield> {
   return cachedPermissions(`${userId}:${guildId}:${channelId}`, async () => {
-    const [guild] = await db
-      .select({ ownerId: schema.guilds.ownerId })
-      .from(schema.guilds)
-      .where(eq(schema.guilds.id, guildId))
-      .limit(1);
+    const guild = await guildRepository.findOwnerById(guildId);
 
     if (!guild) throw new ApiError(404, "Guild not found");
 
-    const [everyoneRole] = await db
-      .select()
-      .from(schema.roles)
-      .where(and(eq(schema.roles.guildId, guildId), eq(schema.roles.name, "@everyone")))
-      .limit(1);
+    const everyoneRole = await roleRepository.findEveryoneRole(guildId);
 
     if (!everyoneRole) throw new ApiError(500, "Missing @everyone role");
 
-    const memberRoleRecords = await db
-      .select({ roleId: schema.memberRoles.roleId })
-      .from(schema.memberRoles)
-      .where(and(eq(schema.memberRoles.userId, userId), eq(schema.memberRoles.guildId, guildId)));
+    const fetchedRoles = await permissionRepository.findMemberRolesWithPermissions(userId, guildId);
+    const memberRoles: RolePermission[] = fetchedRoles.map((r) => ({
+      id: r.roleId,
+      permissions: BigInt(r.permissions),
+      position: r.position,
+    }));
 
-    const roleIds = memberRoleRecords.map((r) => r.roleId);
-    let memberRoles: RolePermission[] = [];
-    if (roleIds.length > 0) {
-      const fetchedRoles = await db
-        .select({ id: schema.roles.id, permissions: schema.roles.permissions, position: schema.roles.position })
-        .from(schema.roles)
-        .where(inArray(schema.roles.id, roleIds));
-      memberRoles = fetchedRoles.map((r) => ({ id: r.id, permissions: BigInt(r.permissions), position: r.position }));
-    }
-
-    const overwrites = await db
-      .select()
-      .from(schema.permissionOverwrites)
-      .where(eq(schema.permissionOverwrites.channelId, channelId));
+    const overwrites = await permissionRepository.findOverwritesByChannelId(channelId);
 
     const channelOverwrites: PermissionOverwrite[] = overwrites.map((o) => ({
       id: o.targetId,
@@ -314,36 +280,7 @@ export async function setPermissionOverwrite(
   deny: string,
   guildId?: string
 ) {
-  const existing = await db
-    .select()
-    .from(schema.permissionOverwrites)
-    .where(
-      and(
-        eq(schema.permissionOverwrites.channelId, channelId),
-        eq(schema.permissionOverwrites.targetId, targetId)
-      )
-    )
-    .limit(1);
-
-  if (existing.length > 0) {
-    await db
-      .update(schema.permissionOverwrites)
-      .set({ allow, deny, targetType })
-      .where(
-        and(
-          eq(schema.permissionOverwrites.channelId, channelId),
-          eq(schema.permissionOverwrites.targetId, targetId)
-        )
-      );
-  } else {
-    await db.insert(schema.permissionOverwrites).values({
-      channelId,
-      targetId,
-      targetType,
-      allow,
-      deny,
-    });
-  }
+  await permissionRepository.setOverwrite({ channelId, targetId, targetType, allow, deny });
 
   // Invalidate permissions for affected guild
   if (guildId) {
@@ -354,14 +291,7 @@ export async function setPermissionOverwrite(
 }
 
 export async function deletePermissionOverwrite(channelId: string, targetId: string, guildId?: string) {
-  await db
-    .delete(schema.permissionOverwrites)
-    .where(
-      and(
-        eq(schema.permissionOverwrites.channelId, channelId),
-        eq(schema.permissionOverwrites.targetId, targetId)
-      )
-    );
+  await permissionRepository.deleteOverwrite(channelId, targetId);
 
   if (guildId) {
     await invalidateGuildPermissions(guildId);
@@ -369,8 +299,5 @@ export async function deletePermissionOverwrite(channelId: string, targetId: str
 }
 
 export async function getChannelOverwrites(channelId: string) {
-  return db
-    .select()
-    .from(schema.permissionOverwrites)
-    .where(eq(schema.permissionOverwrites.channelId, channelId));
+  return permissionRepository.findOverwritesByChannelId(channelId);
 }

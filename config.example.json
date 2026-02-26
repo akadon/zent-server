@@ -1,0 +1,17 @@
+{
+  "s3": {
+    "endpoint": "localhost",
+    "port": 9000,
+    "accessKey": "minioadmin",
+    "secretKey": "minioadmin",
+    "bucket": "yxc-uploads",
+    "useSSL": false
+  },
+  "stream": {
+    "url": "http://localhost:4005",
+    "internalKey": "changeme"
+  },
+  "cors": {
+    "origins": ["http://localhost:3000"]
+  }
+}

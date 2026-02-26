@@ -1,8 +1,8 @@
-import { eq, and } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
 import { ChannelType } from "@yxc/types";
+import { threadRepository } from "../repositories/thread.repository.js";
+import { channelRepository } from "../repositories/channel.repository.js";
 
 export async function createThread(
   parentChannelId: string,
@@ -14,64 +14,40 @@ export async function createThread(
     messageId?: string; // Create thread from message
   }
 ) {
-  const parentChannel = await db
-    .select()
-    .from(schema.channels)
-    .where(eq(schema.channels.id, parentChannelId))
-    .limit(1);
-
-  if (!parentChannel[0]) throw new ApiError(404, "Parent channel not found");
+  const parentChannel = await channelRepository.findById(parentChannelId);
+  if (!parentChannel) throw new ApiError(404, "Parent channel not found");
 
   const threadId = generateSnowflake();
   const type = options?.type ?? ChannelType.PUBLIC_THREAD;
 
-  await db.transaction(async (tx) => {
-    // Create thread as a channel
-    await tx.insert(schema.channels).values({
+  await threadRepository.createThreadTransaction(
+    {
       id: threadId,
-      guildId: parentChannel[0]!.guildId,
+      guildId: parentChannel.guildId,
       type,
       name,
       parentId: parentChannelId,
       ownerId: creatorId,
       position: 0,
-    });
-
-    // Create thread metadata
-    await tx.insert(schema.threadMetadata).values({
+    },
+    {
       channelId: threadId,
       autoArchiveDuration: options?.autoArchiveDuration ?? 1440,
-    });
-
-    // Add creator as thread member
-    await tx.insert(schema.threadMembers).values({
-      channelId: threadId,
-      userId: creatorId,
-    });
-  });
+    },
+    creatorId,
+  );
 
   return getThread(threadId);
 }
 
 export async function getThread(threadId: string) {
-  const [channel] = await db
-    .select()
-    .from(schema.channels)
-    .where(eq(schema.channels.id, threadId))
-    .limit(1);
-
+  const channel = await threadRepository.findById(threadId);
   if (!channel) return null;
 
-  const [metadata] = await db
-    .select()
-    .from(schema.threadMetadata)
-    .where(eq(schema.threadMetadata.channelId, threadId))
-    .limit(1);
-
-  const memberCount = await db
-    .select({ userId: schema.threadMembers.userId })
-    .from(schema.threadMembers)
-    .where(eq(schema.threadMembers.channelId, threadId));
+  const [metadata, members] = await Promise.all([
+    threadRepository.findMetadata(threadId),
+    threadRepository.findMembers(threadId),
+  ]);
 
   return {
     ...channel,
@@ -85,7 +61,7 @@ export async function getThread(threadId: string) {
           invitable: metadata.invitable,
         }
       : null,
-    memberCount: memberCount.length,
+    memberCount: members.length,
   };
 }
 
@@ -100,10 +76,7 @@ export async function updateThread(
   }
 ) {
   if (data.name) {
-    await db
-      .update(schema.channels)
-      .set({ name: data.name })
-      .where(eq(schema.channels.id, threadId));
+    await threadRepository.update(threadId, { name: data.name });
   }
 
   const metadataUpdate: Record<string, unknown> = {};
@@ -118,44 +91,26 @@ export async function updateThread(
   if (data.invitable !== undefined) metadataUpdate.invitable = data.invitable;
 
   if (Object.keys(metadataUpdate).length > 0) {
-    await db
-      .update(schema.threadMetadata)
-      .set(metadataUpdate)
-      .where(eq(schema.threadMetadata.channelId, threadId));
+    await threadRepository.updateMetadata(threadId, metadataUpdate);
   }
 
   return getThread(threadId);
 }
 
 export async function deleteThread(threadId: string) {
-  await db.delete(schema.threadMembers).where(eq(schema.threadMembers.channelId, threadId));
-  await db.delete(schema.threadMetadata).where(eq(schema.threadMetadata.channelId, threadId));
-  await db.delete(schema.channels).where(eq(schema.channels.id, threadId));
+  await threadRepository.deleteThread(threadId);
 }
 
 export async function addThreadMember(threadId: string, userId: string) {
-  await db
-    .insert(schema.threadMembers)
-    .values({ channelId: threadId, userId })
-    .onConflictDoNothing();
+  await threadRepository.addMember(threadId, userId);
 }
 
 export async function removeThreadMember(threadId: string, userId: string) {
-  await db
-    .delete(schema.threadMembers)
-    .where(
-      and(
-        eq(schema.threadMembers.channelId, threadId),
-        eq(schema.threadMembers.userId, userId)
-      )
-    );
+  await threadRepository.removeMember(threadId, userId);
 }
 
 export async function getThreadMembers(threadId: string) {
-  const members = await db
-    .select()
-    .from(schema.threadMembers)
-    .where(eq(schema.threadMembers.channelId, threadId));
+  const members = await threadRepository.findMembers(threadId);
 
   return members.map((m) => ({
     ...m,
@@ -164,10 +119,7 @@ export async function getThreadMembers(threadId: string) {
 }
 
 export async function getActiveThreads(guildId: string) {
-  const allThreads = await db
-    .select()
-    .from(schema.channels)
-    .where(eq(schema.channels.guildId, guildId));
+  const allChannels = await channelRepository.findByGuildId(guildId);
 
   const threadTypes = [
     ChannelType.PUBLIC_THREAD,
@@ -176,15 +128,10 @@ export async function getActiveThreads(guildId: string) {
   ];
 
   const threads = [];
-  for (const ch of allThreads) {
+  for (const ch of allChannels) {
     if (!threadTypes.includes(ch.type)) continue;
 
-    const [metadata] = await db
-      .select()
-      .from(schema.threadMetadata)
-      .where(eq(schema.threadMetadata.channelId, ch.id))
-      .limit(1);
-
+    const metadata = await threadRepository.findMetadata(ch.id);
     if (metadata?.archived) continue;
 
     threads.push({

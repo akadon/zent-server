@@ -1,13 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { authMiddleware } from "../../middleware/auth.js";
-import { db } from "../../db/index.js";
-import { users, recoveryKeys } from "../../db/schema.js";
-import { eq } from "drizzle-orm";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import crypto from "crypto";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError, hashPassword, verifyPassword, generateToken } from "../../services/auth.service.js";
+import { userRepository } from "../../repositories/user.repository.js";
+import { recoveryKeyRepository } from "../../repositories/recovery-key.repository.js";
 
 const useRecoverySchema = z.object({
   email: z.string().email(),
@@ -20,24 +19,17 @@ export async function recoveryRoutes(app: FastifyInstance) {
     "/auth/recovery/generate",
     { preHandler: [authMiddleware, createRateLimiter("auth")] },
     async (request, reply) => {
-      const [user] = await db
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.id, request.userId))
-        .limit(1);
-
+      const user = await userRepository.findById(request.userId);
       if (!user) throw new ApiError(404, "User not found");
 
       const recoveryKey = crypto.randomBytes(32).toString("hex");
       const hashedKey = await hashPassword(recoveryKey);
 
       // Delete existing recovery key if any
-      await db
-        .delete(recoveryKeys)
-        .where(eq(recoveryKeys.userId, request.userId));
+      await recoveryKeyRepository.deleteByUserId(request.userId);
 
       // Insert new recovery key
-      await db.insert(recoveryKeys).values({
+      await recoveryKeyRepository.create({
         id: generateSnowflake(),
         userId: request.userId,
         keyHash: hashedKey,
@@ -57,23 +49,13 @@ export async function recoveryRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const body = useRecoverySchema.parse(request.body);
 
-      const [user] = await db
-        .select({ id: users.id, mfaEnabled: users.mfaEnabled })
-        .from(users)
-        .where(eq(users.email, body.email.toLowerCase()))
-        .limit(1);
-
+      const user = await userRepository.findByEmail(body.email.toLowerCase());
       if (!user) {
         throw new ApiError(401, "Invalid email or recovery key");
       }
 
       // Get recovery key from database
-      const [storedKey] = await db
-        .select({ keyHash: recoveryKeys.keyHash })
-        .from(recoveryKeys)
-        .where(eq(recoveryKeys.userId, user.id))
-        .limit(1);
-
+      const storedKey = await recoveryKeyRepository.findByUserId(user.id);
       if (!storedKey) {
         throw new ApiError(401, "Invalid email or recovery key");
       }
@@ -84,20 +66,15 @@ export async function recoveryRoutes(app: FastifyInstance) {
       }
 
       // Mark recovery key as used and delete it
-      await db
-        .delete(recoveryKeys)
-        .where(eq(recoveryKeys.userId, user.id));
+      await recoveryKeyRepository.deleteByUserId(user.id);
 
       // Reset MFA if enabled
       if (user.mfaEnabled) {
-        await db
-          .update(users)
-          .set({
-            mfaEnabled: false,
-            mfaSecret: null,
-            mfaBackupCodes: null,
-          })
-          .where(eq(users.id, user.id));
+        await userRepository.update(user.id, {
+          mfaEnabled: false,
+          mfaSecret: null,
+          mfaBackupCodes: null,
+        });
       }
 
       const token = generateToken(user.id);
@@ -111,12 +88,7 @@ export async function recoveryRoutes(app: FastifyInstance) {
     "/auth/recovery/status",
     { preHandler: [authMiddleware] },
     async (request, reply) => {
-      const [existing] = await db
-        .select({ id: recoveryKeys.id })
-        .from(recoveryKeys)
-        .where(eq(recoveryKeys.userId, request.userId))
-        .limit(1);
-
+      const existing = await recoveryKeyRepository.findByUserId(request.userId);
       return reply.send({ hasRecoveryKey: !!existing });
     }
   );

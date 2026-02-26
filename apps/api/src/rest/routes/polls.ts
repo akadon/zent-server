@@ -10,17 +10,19 @@ import * as permissionService from "../../services/permission.service.js";
 import { PermissionFlags } from "@yxc/permissions";
 import { redisPub } from "../../config/redis.js";
 import { generateSnowflake } from "@yxc/snowflake";
-import { db, schema } from "../../db/index.js";
 
 async function dispatchMessage(channelId: string, event: string, data: unknown) {
   const channel = await channelService.getChannel(channelId);
   if (!channel) return;
 
   if (channel.guildId) {
-    await redisPub.publish(
-      `gateway:guild:${channel.guildId}`,
-      JSON.stringify({ event, data })
-    );
+    const payload = JSON.stringify({ event, data });
+    const now = Date.now();
+    await Promise.all([
+      redisPub.publish(`gateway:guild:${channel.guildId}`, payload),
+      redisPub.zadd(`guild_events:${channel.guildId}`, now, `${now}:${payload}`),
+      redisPub.zremrangebyscore(`guild_events:${channel.guildId}`, "-inf", now - 60000),
+    ]);
   }
 }
 

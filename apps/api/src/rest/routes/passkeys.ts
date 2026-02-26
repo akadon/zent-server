@@ -1,10 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { authMiddleware } from "../../middleware/auth.js";
-import { db, schema } from "../../db/index.js";
-import { eq } from "drizzle-orm";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { ApiError, generateToken } from "../../services/auth.service.js";
+import { userRepository } from "../../repositories/user.repository.js";
 import * as passkeyService from "../../services/passkey.service.js";
 
 const registerCompleteSchema = z.object({
@@ -28,12 +27,7 @@ export async function passkeyRoutes(app: FastifyInstance) {
     "/auth/passkeys/register/begin",
     { preHandler: [authMiddleware, createRateLimiter("auth")] },
     async (request, reply) => {
-      const [user] = await db
-        .select({ id: schema.users.id, username: schema.users.username, displayName: schema.users.displayName })
-        .from(schema.users)
-        .where(eq(schema.users.id, request.userId))
-        .limit(1);
-
+      const user = await userRepository.findById(request.userId);
       if (!user) throw new ApiError(404, "User not found");
 
       const challenge = await passkeyService.createChallenge(request.userId);

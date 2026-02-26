@@ -1,15 +1,7 @@
-import { eq, and } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
+import { notificationSettingsRepository } from "../repositories/notification-settings.repository.js";
 
 export async function getSettings(userId: string, guildId?: string, channelId?: string) {
-  const conditions = [eq(schema.notificationSettings.userId, userId)];
-  if (guildId) conditions.push(eq(schema.notificationSettings.guildId, guildId));
-  if (channelId) conditions.push(eq(schema.notificationSettings.channelId, channelId));
-
-  const settings = await db
-    .select()
-    .from(schema.notificationSettings)
-    .where(and(...conditions));
+  const settings = await notificationSettingsRepository.find(userId, guildId, channelId);
 
   return settings.map((s) => ({
     ...s,
@@ -29,10 +21,7 @@ export async function upsertSettings(
     muteUntil?: string | null;
   }
 ) {
-  const values: any = {
-    userId,
-    guildId: guildId ?? "global",
-    channelId: channelId ?? "global",
+  const values: Record<string, any> = {
     ...data,
     muteUntil: data.muteUntil ? new Date(data.muteUntil) : null,
   };
@@ -45,31 +34,16 @@ export async function upsertSettings(
     ...(data.muteUntil !== undefined ? { muteUntil: data.muteUntil ? new Date(data.muteUntil) : null } : {}),
   };
 
-  await db
-    .insert(schema.notificationSettings)
-    .values(values)
-    .onConflictDoUpdate({
-      target: [
-        schema.notificationSettings.userId,
-        schema.notificationSettings.guildId,
-        schema.notificationSettings.channelId,
-      ],
-      set: setClause,
-    });
-
-  const [result] = await db
-    .select()
-    .from(schema.notificationSettings)
-    .where(
-      and(
-        eq(schema.notificationSettings.userId, userId),
-        eq(schema.notificationSettings.guildId, guildId ?? "global"),
-        eq(schema.notificationSettings.channelId, channelId ?? "global"),
-      )
-    );
+  const result = await notificationSettingsRepository.upsert(
+    userId,
+    guildId ?? "global",
+    channelId ?? "global",
+    values,
+    setClause,
+  );
 
   return {
-    ...result!,
-    muteUntil: result!.muteUntil?.toISOString() ?? null,
+    ...result,
+    muteUntil: result.muteUntil?.toISOString() ?? null,
   };
 }

@@ -4,7 +4,11 @@ import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import { createServer } from "http";
 import { env } from "./config/env.js";
+import { config } from "./config/config.js";
 import { initSnowflake } from "@yxc/snowflake";
+import { db } from "./db/index.js";
+import { redis } from "./config/redis.js";
+import { sql } from "drizzle-orm";
 import { authRoutes } from "./rest/routes/auth.js";
 import { guildRoutes } from "./rest/routes/guilds.js";
 import { messageRoutes } from "./rest/routes/messages.js";
@@ -51,7 +55,7 @@ console.log(`Snowflake initialized: workerId=${workerId}, processId=${processId}
 
 const app = Fastify({
   logger: {
-    level: env.NODE_ENV === "production" ? "info" : "debug",
+    level: env.NODE_ENV === "production" ? "warn" : "debug",
     transport:
       env.NODE_ENV !== "production"
         ? { target: "pino-pretty", options: { colorize: true } }
@@ -61,7 +65,7 @@ const app = Fastify({
 
 // CORS
 await app.register(cors, {
-  origin: env.CORS_ORIGIN.split(","),
+  origin: config.cors.origins,
   credentials: true,
   maxAge: 86400,
 });
@@ -94,6 +98,23 @@ app.addContentTypeParser(
 
 // Global rate limiting
 app.addHook("preHandler", globalRateLimit);
+
+// Adaptive poll interval — tells clients how often to poll based on load
+let requestCount = 0;
+let pollIntervalMs = 3000;
+setInterval(() => {
+  // Adjust every 10s based on request rate
+  if (requestCount > 500) pollIntervalMs = Math.min(15000, pollIntervalMs + 1000);
+  else if (requestCount > 200) pollIntervalMs = Math.min(10000, pollIntervalMs + 500);
+  else if (requestCount < 50) pollIntervalMs = Math.max(3000, pollIntervalMs - 1000);
+  else pollIntervalMs = Math.max(3000, pollIntervalMs - 500);
+  requestCount = 0;
+}, 10000);
+
+app.addHook("onSend", async (_request, reply) => {
+  requestCount++;
+  reply.header("X-Poll-Interval", pollIntervalMs);
+});
 
 // Error handler
 app.setErrorHandler((error: any, request, reply) => {
@@ -154,15 +175,12 @@ await app.register(cdnRoutes); // CDN routes at root (no /api prefix)
 app.get("/health", async () => {
   const checks: Record<string, string> = { api: "ok" };
   try {
-    const { db } = await import("./db/index.js");
-    const { sql } = await import("drizzle-orm");
     await db.execute(sql`SELECT 1`);
     checks.database = "ok";
   } catch {
     checks.database = "error";
   }
   try {
-    const { redis } = await import("./config/redis.js");
     await redis.ping();
     checks.redis = "ok";
   } catch {

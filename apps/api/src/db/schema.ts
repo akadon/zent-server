@@ -133,6 +133,8 @@ export const messages = pgTable(
     referencedMessageId: varchar("referenced_message_id", { length: 64 }),
     webhookId: varchar("webhook_id", { length: 64 }),
     nonce: text("nonce"),
+    // Denormalized author snapshot for NoSQL-ready reads (no JOIN needed)
+    authorSnapshot: jsonb("author_snapshot").$type<{ id: string; username: string; displayName: string | null; avatar: string | null }>(),
     expiresAt: timestamp("expires_at", { mode: "date" }),
     createdAt: timestamp("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },

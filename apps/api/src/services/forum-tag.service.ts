@@ -1,7 +1,6 @@
-import { eq, and } from "drizzle-orm";
-import { db, schema } from "../db/index.js";
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
+import { forumTagRepository } from "../repositories/forum-tag.repository.js";
 
 const MAX_TAGS_PER_CHANNEL = 20;
 const MAX_TAGS_PER_POST = 5;
@@ -18,13 +17,7 @@ export interface ForumTag {
 }
 
 export async function getChannelTags(channelId: string): Promise<ForumTag[]> {
-  const tags = await db
-    .select()
-    .from(schema.forumTags)
-    .where(eq(schema.forumTags.channelId, channelId))
-    .orderBy(schema.forumTags.position);
-
-  return tags;
+  return forumTagRepository.findByChannelId(channelId);
 }
 
 export async function createTag(
@@ -41,10 +34,7 @@ export async function createTag(
   }
 
   // Check tag limit
-  const existingTags = await db
-    .select()
-    .from(schema.forumTags)
-    .where(eq(schema.forumTags.channelId, channelId));
+  const existingTags = await forumTagRepository.findAllByChannelId(channelId);
 
   if (existingTags.length >= MAX_TAGS_PER_CHANNEL) {
     throw new ApiError(400, `Forum channels can have at most ${MAX_TAGS_PER_CHANNEL} tags`);
@@ -54,23 +44,15 @@ export async function createTag(
   const maxPosition = existingTags.reduce((max, t) => Math.max(max, t.position), -1);
 
   const id = generateSnowflake();
-  await db
-    .insert(schema.forumTags)
-    .values({
-      id,
-      channelId,
-      name: data.name,
-      emojiId: data.emojiId ?? null,
-      emojiName: data.emojiName ?? null,
-      moderated: data.moderated ?? false,
-      position: maxPosition + 1,
-    });
-
-  const [tag] = await db
-    .select()
-    .from(schema.forumTags)
-    .where(eq(schema.forumTags.id, id))
-    .limit(1);
+  const tag = await forumTagRepository.create({
+    id,
+    channelId,
+    name: data.name,
+    emojiId: data.emojiId ?? null,
+    emojiName: data.emojiName ?? null,
+    moderated: data.moderated ?? false,
+    position: maxPosition + 1,
+  });
 
   if (!tag) {
     throw new ApiError(500, "Failed to create tag");
@@ -93,22 +75,14 @@ export async function updateTag(
     throw new ApiError(400, `Tag name must be ${MAX_TAG_NAME_LENGTH} characters or less`);
   }
 
-  await db
-    .update(schema.forumTags)
-    .set({
-      ...(data.name !== undefined && { name: data.name }),
-      ...(data.emojiId !== undefined && { emojiId: data.emojiId }),
-      ...(data.emojiName !== undefined && { emojiName: data.emojiName }),
-      ...(data.moderated !== undefined && { moderated: data.moderated }),
-      ...(data.position !== undefined && { position: data.position }),
-    })
-    .where(eq(schema.forumTags.id, tagId));
+  const updateData: Record<string, any> = {};
+  if (data.name !== undefined) updateData.name = data.name;
+  if (data.emojiId !== undefined) updateData.emojiId = data.emojiId;
+  if (data.emojiName !== undefined) updateData.emojiName = data.emojiName;
+  if (data.moderated !== undefined) updateData.moderated = data.moderated;
+  if (data.position !== undefined) updateData.position = data.position;
 
-  const [tag] = await db
-    .select()
-    .from(schema.forumTags)
-    .where(eq(schema.forumTags.id, tagId))
-    .limit(1);
+  const tag = await forumTagRepository.update(tagId, updateData);
 
   if (!tag) {
     throw new ApiError(404, "Tag not found");
@@ -118,30 +92,17 @@ export async function updateTag(
 }
 
 export async function deleteTag(tagId: string): Promise<void> {
-  const [existing] = await db
-    .select()
-    .from(schema.forumTags)
-    .where(eq(schema.forumTags.id, tagId))
-    .limit(1);
+  const existing = await forumTagRepository.findById(tagId);
 
   if (!existing) {
     throw new ApiError(404, "Tag not found");
   }
 
-  await db
-    .delete(schema.forumTags)
-    .where(eq(schema.forumTags.id, tagId));
+  await forumTagRepository.delete(tagId);
 }
 
 export async function getPostTags(threadId: string): Promise<ForumTag[]> {
-  const postTags = await db
-    .select({
-      tag: schema.forumTags,
-    })
-    .from(schema.forumPostTags)
-    .innerJoin(schema.forumTags, eq(schema.forumPostTags.tagId, schema.forumTags.id))
-    .where(eq(schema.forumPostTags.threadId, threadId));
-
+  const postTags = await forumTagRepository.findPostTags(threadId);
   return postTags.map((pt) => pt.tag);
 }
 
@@ -156,20 +117,13 @@ export async function setPostTags(
   }
 
   // Verify all tags exist and belong to the parent channel
-  const [thread] = await db
-    .select({ parentId: schema.channels.parentId })
-    .from(schema.channels)
-    .where(eq(schema.channels.id, threadId))
-    .limit(1);
+  const parentId = await forumTagRepository.findThreadParentId(threadId);
 
-  if (!thread?.parentId) {
+  if (!parentId) {
     throw new ApiError(404, "Thread not found or has no parent");
   }
 
-  const validTags = await db
-    .select()
-    .from(schema.forumTags)
-    .where(eq(schema.forumTags.channelId, thread.parentId));
+  const validTags = await forumTagRepository.findAllByChannelId(parentId);
 
   const validTagIds = new Set(validTags.map((t) => t.id));
   const moderatedTagIds = new Set(validTags.filter((t) => t.moderated).map((t) => t.id));
@@ -184,17 +138,12 @@ export async function setPostTags(
   }
 
   // Remove existing tags
-  await db
-    .delete(schema.forumPostTags)
-    .where(eq(schema.forumPostTags.threadId, threadId));
+  await forumTagRepository.deletePostTags(threadId);
 
   // Add new tags
   if (tagIds.length > 0) {
-    await db.insert(schema.forumPostTags).values(
-      tagIds.map((tagId) => ({
-        threadId,
-        tagId,
-      }))
+    await forumTagRepository.insertPostTags(
+      tagIds.map((tagId) => ({ threadId, tagId }))
     );
   }
 
@@ -207,28 +156,14 @@ export async function reorderTags(
 ): Promise<ForumTag[]> {
   // Update positions
   for (const { id, position } of tagOrder) {
-    await db
-      .update(schema.forumTags)
-      .set({ position })
-      .where(
-        and(
-          eq(schema.forumTags.id, id),
-          eq(schema.forumTags.channelId, channelId)
-        )
-      );
+    await forumTagRepository.updatePosition(id, channelId, position);
   }
 
   return getChannelTags(channelId);
 }
 
 export async function getTag(tagId: string): Promise<ForumTag | null> {
-  const [tag] = await db
-    .select()
-    .from(schema.forumTags)
-    .where(eq(schema.forumTags.id, tagId))
-    .limit(1);
-
-  return tag ?? null;
+  return forumTagRepository.findById(tagId);
 }
 
 export async function addTagToPost(
@@ -249,10 +184,7 @@ export async function addTagToPost(
   }
 
   try {
-    await db.insert(schema.forumPostTags).values({
-      threadId,
-      tagId,
-    });
+    await forumTagRepository.insertPostTag(threadId, tagId);
   } catch {
     // Tag already applied, ignore
   }
@@ -262,12 +194,5 @@ export async function removeTagFromPost(
   threadId: string,
   tagId: string
 ): Promise<void> {
-  await db
-    .delete(schema.forumPostTags)
-    .where(
-      and(
-        eq(schema.forumPostTags.threadId, threadId),
-        eq(schema.forumPostTags.tagId, tagId)
-      )
-    );
+  await forumTagRepository.deletePostTag(threadId, tagId);
 }
