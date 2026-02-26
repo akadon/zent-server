@@ -64,8 +64,7 @@ export const userRepository = {
       userId,
       activities,
       updatedAt: new Date(),
-    }).onConflictDoUpdate({
-      target: [schema.userActivities.userId],
+    }).onDuplicateKeyUpdate({
       set: { activities, updatedAt: new Date() },
     });
   },

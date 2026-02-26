@@ -1,4 +1,4 @@
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 
 export const roleRepository = {
@@ -40,7 +40,7 @@ export const roleRepository = {
     await db.delete(schema.roles).where(eq(schema.roles.id, id));
   },
   async addToMember(userId: string, guildId: string, roleId: string) {
-    await db.insert(schema.memberRoles).values({ userId, guildId, roleId }).onConflictDoNothing();
+    await db.insert(schema.memberRoles).values({ userId, guildId, roleId }).onDuplicateKeyUpdate({ set: { userId: sql`user_id` } });
   },
   async removeFromMember(userId: string, guildId: string, roleId: string) {
     await db.delete(schema.memberRoles).where(

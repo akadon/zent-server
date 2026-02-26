@@ -24,14 +24,9 @@ export async function createAuditLogEntry(
 
   const entry = await auditlogRepository.findById(id);
 
-  // Dispatch GUILD_AUDIT_LOG_ENTRY_CREATE to guild members + event log
+  // Dispatch GUILD_AUDIT_LOG_ENTRY_CREATE to guild members
   const alPayload = JSON.stringify({ event: "GUILD_AUDIT_LOG_ENTRY_CREATE", data: { ...entry!, createdAt: entry!.createdAt.toISOString() } });
-  const alNow = Date.now();
-  Promise.all([
-    redisPub.publish(`gateway:guild:${guildId}`, alPayload),
-    redisPub.zadd(`guild_events:${guildId}`, alNow, `${alNow}:${alPayload}`),
-    redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", alNow - 60000),
-  ]).catch(() => {});
+  redisPub.publish(`gateway:guild:${guildId}`, alPayload).catch(() => {});
 
   return entry!;
 }

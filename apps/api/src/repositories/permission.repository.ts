@@ -18,8 +18,7 @@ export const permissionRepository = {
     await db
       .insert(schema.permissionOverwrites)
       .values(data)
-      .onConflictDoUpdate({
-        target: [schema.permissionOverwrites.channelId, schema.permissionOverwrites.targetId],
+      .onDuplicateKeyUpdate({
         set: { allow: data.allow, deny: data.deny },
       });
   },

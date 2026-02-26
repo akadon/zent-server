@@ -23,8 +23,7 @@ export const automodRepository = {
     await db
       .insert(schema.automodConfig)
       .values({ guildId, ...data, updatedAt: new Date() })
-      .onConflictDoUpdate({
-        target: schema.automodConfig.guildId,
+      .onDuplicateKeyUpdate({
         set: { ...data, updatedAt: new Date() },
       });
     return (await db.select().from(schema.automodConfig).where(eq(schema.automodConfig.guildId, guildId)).limit(1))[0]!;

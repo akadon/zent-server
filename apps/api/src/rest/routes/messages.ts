@@ -57,27 +57,17 @@ async function dispatchMessage(channelId: string, event: string, data: unknown) 
   if (!channel) return;
 
   const payload = JSON.stringify({ event, data });
-  const now = Date.now();
 
   if (channel.guildId) {
-    // Guild channel — dispatch to the guild room + event log
-    await Promise.all([
-      redisPub.publish(`gateway:guild:${channel.guildId}`, payload),
-      redisPub.zadd(`guild_events:${channel.guildId}`, now, `${now}:${payload}`),
-      redisPub.zremrangebyscore(`guild_events:${channel.guildId}`, "-inf", now - 60000),
-    ]);
+    // Guild channel — dispatch to the guild room
+    await redisPub.publish(`gateway:guild:${channel.guildId}`, payload);
   } else {
-    // DM channel — dispatch to each participant + user event log
+    // DM channel — dispatch to each participant
     const participants = await channelRepository.findDMParticipantsByChannelIds([channelId]);
 
-    await Promise.all(participants.map((p) => {
-      const now = Date.now();
-      return Promise.all([
-        redisPub.publish(`gateway:user:${p.userId}`, payload),
-        redisPub.zadd(`user_events:${p.userId}`, now, `${now}:${payload}`),
-        redisPub.zremrangebyscore(`user_events:${p.userId}`, "-inf", now - 60000),
-      ]);
-    }));
+    await Promise.all(participants.map((p) =>
+      redisPub.publish(`gateway:user:${p.userId}`, payload)
+    ));
   }
 }
 

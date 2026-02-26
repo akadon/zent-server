@@ -16,24 +16,14 @@ import * as channelFollowService from "../../services/channel-follow.service.js"
 import { ApiError, getUserById } from "../../services/auth.service.js";
 import { ChannelType, AuditLogActionType } from "@yxc/types";
 import { PermissionFlags } from "@yxc/permissions";
-import { redisPub } from "../../config/redis.js";
+
 import crypto from "crypto";
 import { memberRepository } from "../../repositories/member.repository.js";
 import { messageRepository } from "../../repositories/message.repository.js";
 import { userRepository } from "../../repositories/user.repository.js";
 import { guildSettingsRepository } from "../../repositories/guild-settings.repository.js";
 
-// Helper to dispatch gateway events to a guild + write to poll event log
-async function dispatchGuild(guildId: string, event: string, data: unknown) {
-  const payload = JSON.stringify({ event, data });
-  const now = Date.now();
-  await Promise.all([
-    redisPub.publish(`gateway:guild:${guildId}`, payload),
-    // Event log for polling clients (60s retention)
-    redisPub.zadd(`guild_events:${guildId}`, now, `${now}:${payload}`),
-    redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", now - 60000),
-  ]);
-}
+import { dispatchGuild } from "../../utils/dispatch.js";
 
 export async function guildRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authMiddleware);
@@ -99,79 +89,6 @@ export async function guildRoutes(app: FastifyInstance) {
     return reply.send(guilds);
   });
 
-  // Full initial state (replaces gateway READY for polling clients)
-  app.get("/users/@me/state", async (request, reply) => {
-    const guilds = await guildService.getUserGuilds(request.userId);
-    const channelsMap: Record<string, any[]> = {};
-    const membersMap: Record<string, any[]> = {};
-
-    await Promise.all(
-      guilds.map(async (guild: any) => {
-        const [channels, members] = await Promise.all([
-          channelService.getGuildChannels(guild.id),
-          memberService.getGuildMembers(guild.id),
-        ]);
-        channelsMap[guild.id] = channels;
-        membersMap[guild.id] = members;
-      })
-    );
-
-    reply.header("Cache-Control", "private, no-cache");
-    return reply.send({ guilds, channels: channelsMap, members: membersMap });
-  });
-
-  // Guild poll — returns events since timestamp (CF-edge cacheable per guild)
-  app.get("/guilds/:guildId/poll", async (request, reply) => {
-    const { guildId } = request.params as { guildId: string };
-    if (!(await guildService.isMember(request.userId, guildId))) {
-      throw new ApiError(403, "Not a member");
-    }
-
-    const since = (request.query as any).since;
-    const sinceTs = since ? parseInt(since, 10) : Date.now() - 30000;
-
-    // Read recent events from Redis sorted set (written by dispatch)
-    const { redis } = await import("../../config/redis.js");
-    const events = await redis.zrangebyscore(
-      `guild_events:${guildId}`,
-      sinceTs,
-      "+inf"
-    );
-
-    const parsed = events.map((e: string) => {
-      // Stored as "timestamp:jsonPayload" — strip the timestamp prefix
-      const idx = e.indexOf(":");
-      const json = idx !== -1 ? e.substring(idx + 1) : e;
-      try { return JSON.parse(json); } catch { return null; }
-    }).filter(Boolean);
-
-    // Short CF cache — all guild members get the same response for the same second
-    reply.header("Cache-Control", "public, max-age=3");
-    return reply.send({ events: parsed, serverTime: Date.now() });
-  });
-
-  // User poll — returns user-specific events since timestamp (DMs, relationships, sessions)
-  app.get("/users/@me/poll", async (request, reply) => {
-    const since = (request.query as any).since;
-    const sinceTs = since ? parseInt(since, 10) : Date.now() - 30000;
-
-    const { redis } = await import("../../config/redis.js");
-    const events = await redis.zrangebyscore(
-      `user_events:${request.userId}`,
-      sinceTs,
-      "+inf"
-    );
-
-    const parsed = events.map((e: string) => {
-      const idx = e.indexOf(":");
-      const json = idx !== -1 ? e.substring(idx + 1) : e;
-      try { return JSON.parse(json); } catch { return null; }
-    }).filter(Boolean);
-
-    reply.header("Cache-Control", "private, no-cache");
-    return reply.send({ events: parsed, serverTime: Date.now() });
-  });
-
   // Voice join (REST proxy to zent-stream)
   app.post("/voice/:guildId/:channelId/join", async (request, reply) => {
     const { guildId, channelId } = request.params as { guildId: string; channelId: string };
@@ -206,14 +123,7 @@ export async function guildRoutes(app: FastifyInstance) {
 
     const result = await res.json() as any;
 
-    // Dispatch voice state update to guild via Redis
-    const vjPayload = JSON.stringify({ event: "VOICE_STATE_UPDATE", data: result.voiceState });
-    const vjNow = Date.now();
-    await Promise.all([
-      redisPub.publish(`gateway:guild:${guildId}`, vjPayload),
-      redisPub.zadd(`guild_events:${guildId}`, vjNow, `${vjNow}:${vjPayload}`),
-      redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", vjNow - 60000),
-    ]);
+    await dispatchGuild(guildId, "VOICE_STATE_UPDATE", result.voiceState);
 
     return reply.send(result);
   });
@@ -235,16 +145,9 @@ export async function guildRoutes(app: FastifyInstance) {
       body: JSON.stringify({ userId: request.userId }),
     });
 
-    const vlPayload = JSON.stringify({
-      event: "VOICE_STATE_UPDATE",
-      data: { userId: request.userId, guildId, channelId: null },
+    await dispatchGuild(guildId, "VOICE_STATE_UPDATE", {
+      userId: request.userId, guildId, channelId: null,
     });
-    const vlNow = Date.now();
-    await Promise.all([
-      redisPub.publish(`gateway:guild:${guildId}`, vlPayload),
-      redisPub.zadd(`guild_events:${guildId}`, vlNow, `${vlNow}:${vlPayload}`),
-      redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", vlNow - 60000),
-    ]);
 
     return reply.status(204).send();
   });

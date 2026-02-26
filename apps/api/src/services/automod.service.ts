@@ -94,14 +94,9 @@ export async function setConfig(guildId: string, config: AutoModConfig): Promise
   // Update cache
   configCache.set(guildId, { config, cachedAt: Date.now() });
 
-  // Dispatch event + event log
+  // Dispatch event
   const payload = JSON.stringify({ event: "AUTO_MODERATION_RULE_UPDATE", data: { guildId, config } });
-  const now = Date.now();
-  await Promise.all([
-    redisPub.publish(`gateway:guild:${guildId}`, payload),
-    redisPub.zadd(`guild_events:${guildId}`, now, `${now}:${payload}`),
-    redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", now - 60000),
-  ]);
+  await redisPub.publish(`gateway:guild:${guildId}`, payload);
 }
 
 export async function deleteConfig(guildId: string): Promise<void> {
@@ -230,10 +225,5 @@ export async function recordAction(
     event: "AUTO_MODERATION_ACTION_EXECUTION",
     data: { guildId, userId, action, reason, messageId, channelId, executedAt: new Date().toISOString() },
   });
-  const now = Date.now();
-  await Promise.all([
-    redisPub.publish(`gateway:guild:${guildId}`, payload),
-    redisPub.zadd(`guild_events:${guildId}`, now, `${now}:${payload}`),
-    redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", now - 60000),
-  ]);
+  await redisPub.publish(`gateway:guild:${guildId}`, payload);
 }

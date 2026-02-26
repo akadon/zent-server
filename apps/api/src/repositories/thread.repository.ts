@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 
 export const threadRepository = {
@@ -32,7 +32,7 @@ export const threadRepository = {
     await db
       .insert(schema.threadMembers)
       .values({ channelId, userId })
-      .onConflictDoNothing();
+      .onDuplicateKeyUpdate({ set: { channelId: sql`channel_id` } });
   },
   async removeMember(channelId: string, userId: string) {
     await db

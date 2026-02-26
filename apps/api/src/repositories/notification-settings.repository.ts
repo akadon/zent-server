@@ -17,12 +17,7 @@ export const notificationSettingsRepository = {
   ) {
     await db.insert(schema.notificationSettings)
       .values({ userId, guildId, channelId, ...values })
-      .onConflictDoUpdate({
-        target: [
-          schema.notificationSettings.userId,
-          schema.notificationSettings.guildId,
-          schema.notificationSettings.channelId,
-        ],
+      .onDuplicateKeyUpdate({
         set: setClause,
       });
     const [result] = await db.select().from(schema.notificationSettings)

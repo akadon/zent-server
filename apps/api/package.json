@@ -21,7 +21,7 @@
     "@fastify/cookie": "^11.0.0",
     "@fastify/websocket": "^11.0.0",
     "drizzle-orm": "^0.38.0",
-    "pg": "^8.13.0",
+    "mysql2": "^3.11.0",
     "ioredis": "^5.4.0",
     "bcrypt": "^5.1.0",
     "jsonwebtoken": "^9.0.0",
@@ -35,7 +35,6 @@
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.0",
-    "@types/pg": "^8.11.0",
     "@types/jsonwebtoken": "^9.0.0",
     "@types/node": "^22.0.0",
     "drizzle-kit": "^0.30.0",

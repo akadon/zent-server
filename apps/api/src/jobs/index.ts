@@ -49,12 +49,7 @@ async function processScheduledMessages() {
         if (channel?.guildId) {
           const guildId = channel.guildId;
           const payload = JSON.stringify({ event: "MESSAGE_CREATE", data: message });
-          const now = Date.now();
-          await Promise.all([
-            redisPub.publish(`gateway:guild:${guildId}`, payload),
-            redisPub.zadd(`guild_events:${guildId}`, now, `${now}:${payload}`),
-            redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", now - 60000),
-          ]);
+          await redisPub.publish(`gateway:guild:${guildId}`, payload);
         }
       } catch (err) {
         console.error(`Failed to send scheduled message ${scheduled.id}:`, err);
@@ -87,9 +82,8 @@ async function cleanupExpiredMessages() {
     const channels = await channelRepository.findByIds(uniqueChannelIds);
     const channelMap = new Map(channels.map((c: any) => [c.id, c.guildId]));
 
-    // Pipeline all gateway dispatches + event log writes
+    // Pipeline all gateway dispatches
     const pipeline = redisPub.pipeline();
-    const now = Date.now();
     for (const msg of expired) {
       const guildId = channelMap.get(msg.channelId);
       if (guildId) {
@@ -98,8 +92,6 @@ async function cleanupExpiredMessages() {
           data: { id: msg.id, channelId: msg.channelId, guildId },
         });
         pipeline.publish(`gateway:guild:${guildId}`, payload);
-        pipeline.zadd(`guild_events:${guildId}`, now, `${now}:${payload}`);
-        pipeline.zremrangebyscore(`guild_events:${guildId}`, "-inf", now - 60000);
       }
     }
     await pipeline.exec();

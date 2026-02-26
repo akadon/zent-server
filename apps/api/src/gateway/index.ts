@@ -668,12 +668,7 @@ export function createGateway(httpServer: HttpServer) {
                   event: "VOICE_SERVER_UPDATE",
                   data: { guildId, channelId, token: body.livekitToken, endpoint: body.livekitUrl },
                 });
-                const vsuNow = Date.now();
-                await Promise.all([
-                  redisPub.publish(`gateway:user:${session.userId}`, vsuPayload),
-                  redisPub.zadd(`user_events:${session.userId}`, vsuNow, `${vsuNow}:${vsuPayload}`),
-                  redisPub.zremrangebyscore(`user_events:${session.userId}`, "-inf", vsuNow - 60000),
-                ]);
+                await redisPub.publish(`gateway:user:${session.userId}`, vsuPayload);
               }
             }
           } else {
@@ -689,12 +684,7 @@ export function createGateway(httpServer: HttpServer) {
       }
 
       const vsPayload = JSON.stringify({ event: "VOICE_STATE_UPDATE", data: voiceState });
-      const vsNow = Date.now();
-      await Promise.all([
-        redisPub.publish(`gateway:guild:${guildId}`, vsPayload),
-        redisPub.zadd(`guild_events:${guildId}`, vsNow, `${vsNow}:${vsPayload}`),
-        redisPub.zremrangebyscore(`guild_events:${guildId}`, "-inf", vsNow - 60000),
-      ]);
+      await redisPub.publish(`gateway:guild:${guildId}`, vsPayload);
     }
 
     async function handleHeartbeat(
