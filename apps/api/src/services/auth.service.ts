@@ -27,8 +27,41 @@ export function generateToken(userId: string): string {
   });
 }
 
-export function verifyToken(token: string): TokenPayload {
-  return jwt.verify(token, env.AUTH_SECRET) as TokenPayload;
+export async function verifyToken(token: string): Promise<TokenPayload> {
+  const payload = jwt.verify(token, env.AUTH_SECRET) as TokenPayload;
+
+  // Check if token has been revoked
+  const revoked = await redis.get(`token:revoked:${token}`);
+  if (revoked) {
+    throw new ApiError(401, "Token has been revoked");
+  }
+
+  return payload;
+}
+
+/**
+ * Revoke a JWT token. Stores in Redis until the token's original expiry.
+ */
+export async function revokeToken(token: string): Promise<void> {
+  try {
+    const decoded = jwt.decode(token) as any;
+    const exp = decoded?.exp;
+    if (exp) {
+      const ttl = exp - Math.floor(Date.now() / 1000);
+      if (ttl > 0) {
+        await redis.setex(`token:revoked:${token}`, ttl, "1");
+      }
+    }
+  } catch {
+    // Token already invalid, nothing to revoke
+  }
+}
+
+/**
+ * Revoke all tokens for a user by incrementing their token version.
+ */
+export async function revokeAllUserTokens(userId: string): Promise<void> {
+  await redis.incr(`user:token_version:${userId}`);
 }
 
 export function generateMfaTicket(userId: string): string {

@@ -21,6 +21,15 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default("http://localhost:3000"),
   VOICE_SERVICE_URL: z.string().optional(),
   VOICE_INTERNAL_KEY: z.string().optional(),
+  RP_ID: z.string().default("3aka.com"),
+  RP_ORIGIN: z.string().default("https://3aka.com"),
+  ENABLE_PRESENCE: z
+    .string()
+    .transform((v) => v === "true")
+    .default("false"),
+  GATEWAY_HEARTBEAT_INTERVAL: z.coerce.number().default(60000),
+  WORKER_ID: z.coerce.number().default(1),
+  PROCESS_ID: z.coerce.number().default(1),
 });
 
 export const env = envSchema.parse(process.env);

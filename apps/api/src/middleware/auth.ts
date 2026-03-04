@@ -19,7 +19,7 @@ export async function authMiddleware(request: FastifyRequest, reply: FastifyRepl
   }
 
   try {
-    const payload = verifyToken(token);
+    const payload = await verifyToken(token);
     const user = await getUserById(payload.userId);
     if (!user) {
       throw new ApiError(401, "User not found");

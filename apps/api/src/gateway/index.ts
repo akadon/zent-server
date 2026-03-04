@@ -25,7 +25,8 @@ import { userRepository } from "../repositories/user.repository.js";
 
 // ── Constants ──
 
-const HEARTBEAT_INTERVAL = 41250; // ~41s
+const ENABLE_PRESENCE = env.ENABLE_PRESENCE;
+const HEARTBEAT_INTERVAL = env.GATEWAY_HEARTBEAT_INTERVAL; // default 60s
 const PRESENCE_TTL = 300; // 5 minutes
 const SESSION_TTL = Math.ceil(HEARTBEAT_INTERVAL / 1000) + 30;
 const RESUME_WINDOW = 300; // 5 minutes
@@ -34,6 +35,23 @@ const RESUME_BUFFER_TTL = 300; // 5 minutes
 const RESUME_CIRCUIT_BREAKER_THRESHOLD = 100_000;
 const MAX_CONNECTIONS = 500_000;
 const WS_PING_INTERVAL = 30_000; // 30s TCP-level liveness check
+const NUM_SHARDS = parseInt(process.env.NUM_SHARDS || "1", 10);
+const SHARD_ID = parseInt(process.env.SHARD_ID || "0", 10);
+
+// ── Shard helper: consistent hash to determine which shard owns a guild ──
+
+function guildShardId(guildId: string): number {
+  if (NUM_SHARDS <= 1) return 0;
+  let hash = 0;
+  for (let i = 0; i < guildId.length; i++) {
+    hash = ((hash << 5) - hash + guildId.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) % NUM_SHARDS;
+}
+
+function isOwnedShard(guildId: string): boolean {
+  return NUM_SHARDS <= 1 || guildShardId(guildId) === SHARD_ID;
+}
 
 // ── Types ──
 
@@ -295,7 +313,10 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
   // ── Redis Pub/Sub for cross-instance event distribution ──
 
   const gatewaySub = new Redis(env.REDIS_URL);
+  // Subscribe to all guild events (filtering happens in handler via room membership)
+  // and all user events (DMs, session invalidation)
   gatewaySub.psubscribe("gateway:guild:*", "gateway:user:*");
+  console.log(`Gateway shard ${SHARD_ID}/${NUM_SHARDS} subscribed to pub/sub`);
 
   gatewaySub.on("pmessage", async (_pattern, channel, message) => {
     try {
@@ -414,7 +435,7 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
             await handleHeartbeat(ws);
             break;
           case GatewayOp.PRESENCE_UPDATE:
-            if (session) await handlePresenceUpdate(session, payload.d as PresenceUpdatePayload);
+            if (session && ENABLE_PRESENCE) await handlePresenceUpdate(session, payload.d as PresenceUpdatePayload);
             break;
           case GatewayOp.RESUME:
             await handleResume(ws, connId, payload.d as { token: string; sessionId: string; seq: number });
@@ -448,15 +469,17 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
           const pipeline = redisPub.pipeline();
           for (const guildId of session.guilds) {
             removeFromRoom(guildRooms, guildId, ws);
-            pipeline.publish(
-              `gateway:guild:${guildId}`,
-              JSON.stringify({
-                event: "PRESENCE_UPDATE",
-                data: { userId: session.userId, guildId, status: "offline", customStatus: null },
-              })
-            );
+            if (ENABLE_PRESENCE) {
+              pipeline.publish(
+                `gateway:guild:${guildId}`,
+                JSON.stringify({
+                  event: "PRESENCE_UPDATE",
+                  data: { userId: session.userId, guildId, status: "offline", customStatus: null },
+                })
+              );
+            }
           }
-          await pipeline.exec();
+          if (ENABLE_PRESENCE) await pipeline.exec();
         }
 
         removeFromRoom(userRooms, session.userId, ws);
@@ -480,7 +503,7 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
         return;
       }
 
-      const tokenPayload = verifyToken(data.token);
+      const tokenPayload = await verifyToken(data.token);
       const user = await getUserById(tokenPayload.userId);
       if (!user) {
         send(ws, { op: GatewayOp.INVALID_SESSION, d: false });
@@ -495,6 +518,11 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
         getUserDMChannels(user.id),
       ]);
 
+      // When sharding, only handle guilds owned by this shard
+      const ownedGuilds = NUM_SHARDS > 1
+        ? userGuilds.filter((g) => isOwnedShard(g.id))
+        : userGuilds;
+
       session = {
         connId,
         userId: user.id,
@@ -502,7 +530,7 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
         sequence: 0,
         heartbeatTimer: null,
         lastHeartbeat: Date.now(),
-        guilds: userGuilds.map((g) => g.id),
+        guilds: ownedGuilds.map((g) => g.id),
         intents: data.intents ?? 0xFFFFFFFF,
         rateLimits: {},
       };
@@ -511,16 +539,16 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
       await storeSession(connId, session);
       await storeSessionIndex(sessionId, connId, session.intents);
 
-      // Join rooms
-      for (const guild of userGuilds) {
+      // Join rooms (only owned guilds when sharding)
+      for (const guild of ownedGuilds) {
         addToRoom(guildRooms, guild.id, ws);
       }
       addToRoom(userRooms, user.id, ws);
 
-      // Set user online
+      // Set user online (skipped if presence disabled)
       await setPresence(user.id, "online", null);
 
-      if (userGuilds.length > 0) {
+      if (ENABLE_PRESENCE && userGuilds.length > 0) {
         const pipeline = redisPub.pipeline();
         for (const guild of userGuilds) {
           pipeline.publish(
@@ -534,7 +562,7 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
         await pipeline.exec();
       }
 
-      // Send READY
+      // Send READY (always include all guilds so client has full list)
       const readyPayload: GatewayPayload = {
         op: GatewayOp.DISPATCH,
         t: "READY",
@@ -543,6 +571,7 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
           user: { ...user, createdAt: user.createdAt.toISOString() },
           guilds: userGuilds as any,
           sessionId,
+          shard: NUM_SHARDS > 1 ? [SHARD_ID, NUM_SHARDS] : undefined,
           readStates: readStates.map((rs) => ({
             channelId: rs.channelId,
             lastMessageId: rs.lastMessageId,
@@ -563,7 +592,7 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
       data: { token: string; sessionId: string; seq: number }
     ) {
       try {
-        const tokenPayload = verifyToken(data.token);
+        const tokenPayload = await verifyToken(data.token);
         const user = await getUserById(tokenPayload.userId);
         if (!user) {
           send(ws, { op: GatewayOp.INVALID_SESSION, d: false });
@@ -584,6 +613,10 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
         }
 
         const userGuilds = await getUserGuilds(user.id);
+        const ownedGuilds = NUM_SHARDS > 1
+          ? userGuilds.filter((g) => isOwnedShard(g.id))
+          : userGuilds;
+
         session = {
           connId,
           userId: user.id,
@@ -591,7 +624,7 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
           sequence: data.seq,
           heartbeatTimer: null,
           lastHeartbeat: Date.now(),
-          guilds: userGuilds.map((g) => g.id),
+          guilds: ownedGuilds.map((g) => g.id),
           intents: sessionData.intents,
           rateLimits: {},
         };
@@ -600,8 +633,8 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
         await storeSession(connId, session);
         await storeSessionIndex(data.sessionId, connId, session.intents);
 
-        // Rejoin rooms
-        for (const guild of userGuilds) {
+        // Rejoin rooms (only owned guilds when sharding)
+        for (const guild of ownedGuilds) {
           addToRoom(guildRooms, guild.id, ws);
         }
         addToRoom(userRooms, user.id, ws);
@@ -737,10 +770,11 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
       if (session) {
         session.lastHeartbeat = Date.now();
         resetHeartbeatTimer(ws);
-        await Promise.all([
-          redis.expire(`presence:${session.userId}`, PRESENCE_TTL),
-          refreshSessionTTL(session.connId),
-        ]);
+        const promises: Promise<any>[] = [refreshSessionTTL(session.connId)];
+        if (ENABLE_PRESENCE) {
+          promises.push(redis.expire(`presence:${session.userId}`, PRESENCE_TTL));
+        }
+        await Promise.all(promises);
       }
       send(ws, { op: GatewayOp.HEARTBEAT_ACK, d: null });
     }
@@ -856,6 +890,8 @@ async function setPresence(
   customStatus: { text?: string; emoji?: string } | null,
   activities: unknown[] = []
 ) {
+  if (!ENABLE_PRESENCE) return;
+
   const presenceKey = `presence:${userId}`;
   await redis.hset(presenceKey, {
     status,

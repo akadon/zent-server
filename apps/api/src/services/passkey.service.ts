@@ -1,8 +1,13 @@
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
 import { redis } from "../config/redis.js";
+import { env } from "../config/env.js";
 import { passkeyRepository } from "../repositories/passkey.repository.js";
 import crypto from "crypto";
+import {
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse,
+} from "@simplewebauthn/server";
 
 export interface PasskeyCredential {
   id: string;
@@ -82,6 +87,41 @@ export async function createCredential(
   return credential;
 }
 
+/**
+ * Verify a registration response and create the credential.
+ */
+export async function verifyAndCreateCredential(
+  userId: string,
+  challenge: string,
+  response: any
+): Promise<PasskeyCredential> {
+  const challengeUserId = await validateChallenge(challenge);
+  if (challengeUserId === null) {
+    throw new ApiError(400, "Challenge expired or invalid");
+  }
+
+  const verification = await verifyRegistrationResponse({
+    response,
+    expectedChallenge: challenge,
+    expectedOrigin: env.RP_ORIGIN,
+    expectedRPID: env.RP_ID,
+  });
+
+  if (!verification.verified || !verification.registrationInfo) {
+    throw new ApiError(400, "Registration verification failed");
+  }
+
+  const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+
+  return createCredential(userId, {
+    credentialId: credential.id,
+    publicKey: Buffer.from(credential.publicKey).toString("base64url"),
+    deviceType: credentialDeviceType,
+    transports: response.response.transports ?? [],
+    aaguid: verification.registrationInfo.aaguid,
+  });
+}
+
 export async function updateCredentialCounter(
   credentialId: string
 ): Promise<void> {
@@ -100,9 +140,13 @@ export async function deleteCredential(
   await passkeyRepository.deleteByUserAndCredentialId(userId, credentialId);
 }
 
+/**
+ * Authenticate with a WebAuthn credential - now with proper cryptographic verification.
+ */
 export async function authenticateWithCredential(
   credentialId: string,
-  challenge: string
+  challenge: string,
+  authResponse: any
 ): Promise<string> {
   // Validate challenge
   const challengeUserId = await validateChallenge(challenge);
@@ -116,7 +160,25 @@ export async function authenticateWithCredential(
     throw new ApiError(401, "Unknown credential");
   }
 
-  // Update counter and last used
+  // Verify the assertion cryptographically
+  const verification = await verifyAuthenticationResponse({
+    response: authResponse,
+    expectedChallenge: challenge,
+    expectedOrigin: env.RP_ORIGIN,
+    expectedRPID: env.RP_ID,
+    credential: {
+      id: credential.credentialId,
+      publicKey: Buffer.from(credential.publicKey, "base64url"),
+      counter: credential.counter,
+      transports: credential.transports as any,
+    },
+  });
+
+  if (!verification.verified) {
+    throw new ApiError(401, "Passkey verification failed");
+  }
+
+  // Update counter to prevent replay attacks
   await updateCredentialCounter(credentialId);
 
   return credential.userId;
