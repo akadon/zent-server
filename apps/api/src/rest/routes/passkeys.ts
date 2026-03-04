@@ -18,7 +18,11 @@ const authenticateCompleteSchema = z.object({
   credentialId: z.string().min(1),
   authenticatorData: z.string().min(1),
   signature: z.string().min(1),
+  clientDataJSON: z.string().min(1),
   challenge: z.string().min(1),
+  id: z.string().optional(),
+  rawId: z.string().optional(),
+  type: z.string().optional(),
 });
 
 export async function passkeyRoutes(app: FastifyInstance) {
@@ -111,7 +115,19 @@ export async function passkeyRoutes(app: FastifyInstance) {
 
       const userId = await passkeyService.authenticateWithCredential(
         body.credentialId,
-        body.challenge
+        body.challenge,
+        {
+          id: body.id || body.credentialId,
+          rawId: body.rawId || body.credentialId,
+          type: body.type || "public-key",
+          response: {
+            authenticatorData: body.authenticatorData,
+            clientDataJSON: body.clientDataJSON,
+            signature: body.signature,
+          },
+          authenticatorAttachment: "platform",
+          clientExtensionResults: {},
+        }
       );
 
       const token = generateToken(userId);

@@ -217,10 +217,13 @@ export async function mfaRoutes(app: FastifyInstance) {
           throw new ApiError(400, "Invalid verification code");
         }
 
-        // Remove used backup code
+        // Remove used backup code and re-hash any remaining legacy (unsalted) codes
         const updatedCodes = [...backupCodes];
         updatedCodes.splice(backupIndex, 1);
-        await userRepository.update(userId, { mfaBackupCodes: updatedCodes });
+        const rehashed = updatedCodes.map((code) =>
+          code.includes(":") ? code : hashBackupCode(code)
+        );
+        await userRepository.update(userId, { mfaBackupCodes: rehashed });
       }
 
       const token = generateToken(user.id);

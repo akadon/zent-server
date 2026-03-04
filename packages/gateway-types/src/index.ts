@@ -278,6 +278,7 @@ export interface ReadyPayload {
   user: User;
   guilds: GuildCreatePayload[];
   sessionId: string;
+  shard?: [number, number];
   readStates: ReadState[];
   relationships: Array<{
     id: string;
