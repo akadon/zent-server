@@ -1,0 +1,11 @@
+.env
+.env.*
+.git
+.gitignore
+.claude
+.turbo
+node_modules
+dist
+*.md
+docker-compose*.yml
+k8s

@@ -8,7 +8,7 @@ COPY apps/web/package.json ./apps/web/
 COPY packages/types/package.json ./packages/types/
 COPY packages/gateway-types/package.json ./packages/gateway-types/
 COPY packages/permissions/package.json ./packages/permissions/
-RUN npm install --frozen-lockfile 2>/dev/null || npm install
+RUN npm ci || npm install
 
 FROM base AS builder
 WORKDIR /app
