@@ -281,7 +281,7 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
   });
 
   // Stale session cleanup every 60s
-  setInterval(() => {
+  const staleCleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [ws, sess] of sessions) {
       if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
@@ -866,6 +866,7 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
 
   const shutdown = async () => {
     clearInterval(pingTimer);
+    clearInterval(staleCleanupTimer);
     for (const [ws, sess] of sessions) {
       send(ws, { op: GatewayOp.RECONNECT, d: null });
       await storeSessionIndex(sess.sessionId, sess.connId, sess.intents);
@@ -874,6 +875,7 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
     sessions.clear();
     guildRooms.clear();
     userRooms.clear();
+    await gatewaySub.quit();
   };
 
   process.on("SIGTERM", shutdown);
