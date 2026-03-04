@@ -5,6 +5,7 @@ import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { ApiError, generateToken } from "../../services/auth.service.js";
 import { userRepository } from "../../repositories/user.repository.js";
 import * as passkeyService from "../../services/passkey.service.js";
+import { env } from "../../config/env.js";
 
 const registerCompleteSchema = z.object({
   credentialId: z.string().min(1),
@@ -39,7 +40,7 @@ export async function passkeyRoutes(app: FastifyInstance) {
 
       return reply.send({
         challenge,
-        rp: { name: "Zent", id: "localhost" },
+        rp: { name: "Zent", id: env.RP_ID },
         user: {
           id: Buffer.from(user.id).toString("base64url"),
           name: user.username,
