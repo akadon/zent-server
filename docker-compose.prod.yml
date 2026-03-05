@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:6379:6379"
-    command: sh -c "redis-server --appendonly yes --maxmemory 4gb --maxmemory-policy allkeys-lru --requirepass $$REDIS_PASSWORD --maxclients 100000 --tcp-keepalive 60 --tcp-backlog 65535 --timeout 0 --hz 100 --dynamic-hz yes"
+    command: sh -c "redis-server --appendonly no --save 300 1000 --maxmemory 16gb --maxmemory-policy volatile-lru --requirepass $$REDIS_PASSWORD --maxclients 500000 --tcp-keepalive 60 --tcp-backlog 65535 --timeout 0 --hz 100 --dynamic-hz yes"
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD --no-auth-warning ping"]
       interval: 5s
@@ -25,7 +25,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 5G
+          memory: 18G
           cpus: "1.0"
 
   api:
@@ -48,15 +48,15 @@ services:
     tmpfs: [/tmp]
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:4000/health"]
-      interval: 15s
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 2
       start_period: 15s
     deploy:
       resources:
         limits:
-          memory: 600M
-          cpus: "1.0"
+          memory: 800M
+          cpus: "0.5"
 
   auth:
     build:
@@ -78,18 +78,19 @@ services:
     tmpfs: [/tmp]
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:4001/health"]
-      interval: 15s
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 2
       start_period: 15s
     deploy:
       resources:
         limits:
-          memory: 600M
-          cpus: "1.0"
+          memory: 400M
+          cpus: "0.25"
 
   # Gateway instances - each on a separate port for nginx upstream load balancing
   # All share Redis pub/sub for cross-instance event distribution
+  # 4 shards: each gateway owns 1/4 of guilds by consistent hash
   gateway-1:
     build:
       context: .
@@ -101,13 +102,13 @@ services:
     environment:
       API_PORT: "4002"
       GATEWAY_PORT: "4002"
-      NODE_OPTIONS: "--max-old-space-size=2500"
+      NODE_OPTIONS: "--max-old-space-size=768"
       ENABLE_PRESENCE: "false"
       GATEWAY_HEARTBEAT_INTERVAL: "60000"
       WORKER_ID: "1"
       PROCESS_ID: "1"
       SHARD_ID: "0"
-      NUM_SHARDS: "1"
+      NUM_SHARDS: "4"
     depends_on:
       redis:
         condition: service_healthy
@@ -121,15 +122,15 @@ services:
         hard: 1048576
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:4002/health"]
-      interval: 15s
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 2
       start_period: 15s
     deploy:
       resources:
         limits:
-          memory: 3G
-          cpus: "1.0"
+          memory: 1G
+          cpus: "0.5"
 
   gateway-2:
     build:
@@ -142,13 +143,13 @@ services:
     environment:
       API_PORT: "4002"
       GATEWAY_PORT: "4002"
-      NODE_OPTIONS: "--max-old-space-size=2500"
+      NODE_OPTIONS: "--max-old-space-size=768"
       ENABLE_PRESENCE: "false"
       GATEWAY_HEARTBEAT_INTERVAL: "60000"
       WORKER_ID: "2"
       PROCESS_ID: "1"
-      SHARD_ID: "0"
-      NUM_SHARDS: "1"
+      SHARD_ID: "1"
+      NUM_SHARDS: "4"
     depends_on:
       redis:
         condition: service_healthy
@@ -162,15 +163,97 @@ services:
         hard: 1048576
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:4002/health"]
-      interval: 15s
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 2
       start_period: 15s
     deploy:
       resources:
         limits:
-          memory: 3G
-          cpus: "1.0"
+          memory: 1G
+          cpus: "0.5"
+
+  gateway-3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4022:4002"
+    env_file: .env.prod
+    environment:
+      API_PORT: "4002"
+      GATEWAY_PORT: "4002"
+      NODE_OPTIONS: "--max-old-space-size=768"
+      ENABLE_PRESENCE: "false"
+      GATEWAY_HEARTBEAT_INTERVAL: "60000"
+      WORKER_ID: "3"
+      PROCESS_ID: "1"
+      SHARD_ID: "2"
+      NUM_SHARDS: "4"
+    depends_on:
+      redis:
+        condition: service_healthy
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:4002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 2
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "0.5"
+
+  gateway-4:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4032:4002"
+    env_file: .env.prod
+    environment:
+      API_PORT: "4002"
+      GATEWAY_PORT: "4002"
+      NODE_OPTIONS: "--max-old-space-size=768"
+      ENABLE_PRESENCE: "false"
+      GATEWAY_HEARTBEAT_INTERVAL: "60000"
+      WORKER_ID: "4"
+      PROCESS_ID: "1"
+      SHARD_ID: "3"
+      NUM_SHARDS: "4"
+    depends_on:
+      redis:
+        condition: service_healthy
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:4002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 2
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "0.5"
 
 volumes:
   redis-data:

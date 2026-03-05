@@ -6,11 +6,11 @@ import { env } from "../config/env.js";
 const pool = mysql.createPool({
   uri: env.DATABASE_URL,
   waitForConnections: true,
-  connectionLimit: 500,
-  maxIdle: 50,
-  idleTimeout: 60000,
+  connectionLimit: 2000,
+  maxIdle: 200,
+  idleTimeout: 30000,
   connectTimeout: 10000,
-  queueLimit: 0,
+  queueLimit: 10000,
   enableKeepAlive: true,
   keepAliveInitialDelay: 30000,
 });

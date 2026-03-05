@@ -41,7 +41,29 @@ await app.register(recoveryRoutes, { prefix: "/api" });
 await app.register(sessionRoutes, { prefix: "/api" });
 await app.register(verificationRoutes, { prefix: "/api" });
 
-app.get("/health", async () => ({ status: "ok", service: "auth", pod: process.env.HOSTNAME }));
+let draining = false;
+
+app.get("/health", async (_request, reply) => {
+  if (draining) {
+    reply.status(503);
+    return { status: "draining", service: "auth", pod: process.env.HOSTNAME };
+  }
+  return { status: "ok", service: "auth", pod: process.env.HOSTNAME };
+});
 
 await app.listen({ port: PORT, host: "0.0.0.0" });
 console.log(`Auth service listening on port ${PORT}`);
+
+async function gracefulShutdown(signal: string) {
+  console.log(`Auth: ${signal} received — draining`);
+  draining = true;
+  await new Promise((r) => setTimeout(r, 5000));
+  try {
+    await Promise.race([app.close(), new Promise((r) => setTimeout(r, 10_000))]);
+  } catch {}
+  console.log("Auth: shutdown complete");
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));

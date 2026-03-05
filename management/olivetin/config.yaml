@@ -1,0 +1,174 @@
+# OliveTin configuration — custom management buttons
+# Buttons appear in web UI and can be embedded in Grafana
+
+listenAddressSingleHTTPFrontend: 0.0.0.0:1337
+logLevel: INFO
+showFooter: false
+pageTitle: Zent Management
+
+actions:
+  # ── Zent Services ──
+  - title: Restart Zent API
+    icon: refresh
+    shell: docker restart api
+    timeout: 30
+    popupOnStart: execution-dialog
+
+  - title: Restart Zent Auth
+    icon: refresh
+    shell: docker restart auth
+    timeout: 30
+    popupOnStart: execution-dialog
+
+  - title: Restart Gateway 1
+    icon: refresh
+    shell: docker restart gateway-1
+    timeout: 30
+    popupOnStart: execution-dialog
+
+  - title: Restart Gateway 2
+    icon: refresh
+    shell: docker restart gateway-2
+    timeout: 30
+    popupOnStart: execution-dialog
+
+  - title: Restart Gateway 3
+    icon: refresh
+    shell: docker restart gateway-3
+    timeout: 30
+    popupOnStart: execution-dialog
+
+  - title: Restart Gateway 4
+    icon: refresh
+    shell: docker restart gateway-4
+    timeout: 30
+    popupOnStart: execution-dialog
+
+  - title: Restart All Gateways
+    icon: refresh
+    shell: docker restart gateway-1 gateway-2 gateway-3 gateway-4
+    timeout: 60
+    popupOnStart: execution-dialog
+
+  - title: Restart Redis
+    icon: database
+    shell: docker restart redis
+    timeout: 30
+    popupOnStart: execution-dialog
+
+  - title: Redeploy Zent Stack
+    icon: rocket
+    shell: cd /home/ubuntu/projects/zent-server && docker compose -f docker-compose.prod.yml up -d --remove-orphans
+    timeout: 300
+    popupOnStart: execution-dialog
+
+  # ── Health Checks ──
+  - title: Check All Services
+    icon: heart
+    shell: |
+      echo "=== API ===" && curl -sf http://127.0.0.1:4000/health | python3 -m json.tool
+      echo "=== Auth ===" && curl -sf http://127.0.0.1:4001/health | python3 -m json.tool
+      echo "=== Gateway 1 ===" && curl -sf http://127.0.0.1:4002/health | python3 -m json.tool
+      echo "=== Gateway 2 ===" && curl -sf http://127.0.0.1:4012/health | python3 -m json.tool
+      echo "=== Gateway 3 ===" && curl -sf http://127.0.0.1:4022/health | python3 -m json.tool
+      echo "=== Gateway 4 ===" && curl -sf http://127.0.0.1:4032/health | python3 -m json.tool
+    timeout: 15
+    popupOnStart: execution-dialog
+
+  - title: Docker Status
+    icon: box
+    shell: docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    timeout: 10
+    popupOnStart: execution-dialog
+
+  - title: Redis Info
+    icon: database
+    shell: docker exec redis redis-cli -a $REDIS_PASSWORD --no-auth-warning INFO memory | grep -E "used_memory_human|maxmemory_human|mem_fragmentation_ratio"
+    timeout: 10
+    popupOnStart: execution-dialog
+
+  # ── Remote Servers ──
+  - title: Reboot Micro 2 (Registrar)
+    icon: power
+    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@144.21.37.202 "sudo reboot"
+    timeout: 15
+    popupOnStart: execution-dialog
+
+  - title: Reboot Micro 1 (S3)
+    icon: power
+    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@158.101.199.90 "sudo reboot"
+    timeout: 15
+    popupOnStart: execution-dialog
+
+  - title: Micro 2 Status
+    icon: monitor
+    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@144.21.37.202 "echo '--- Memory ---' && free -h && echo '--- Disk ---' && df -h / && echo '--- Services ---' && systemctl is-active nginx cockpit.socket docker"
+    timeout: 15
+    popupOnStart: execution-dialog
+
+  - title: Micro 1 Status
+    icon: monitor
+    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@158.101.199.90 "echo '--- Memory ---' && free -h && echo '--- Disk ---' && df -h / && echo '--- Docker ---' && docker ps --format 'table {{.Names}}\t{{.Status}}'"
+    timeout: 15
+    popupOnStart: execution-dialog
+
+  # ── Maintenance ──
+  - title: Docker Prune (A1.Flex)
+    icon: trash
+    shell: docker system prune -af --volumes 2>&1 | tail -5
+    timeout: 60
+    popupOnStart: execution-dialog
+
+  - title: Nginx Reload
+    icon: refresh
+    shell: sudo nginx -t && sudo systemctl reload nginx && echo "Nginx reloaded OK"
+    timeout: 15
+    popupOnStart: execution-dialog
+
+  - title: Apply Sysctl
+    icon: settings
+    shell: sudo sysctl --system 2>&1 | tail -5
+    timeout: 10
+    popupOnStart: execution-dialog
+
+  # ── Security ──
+  - title: CrowdSec Decisions
+    icon: shield
+    shell: docker exec crowdsec cscli decisions list 2>/dev/null || echo "CrowdSec not running"
+    timeout: 10
+    popupOnStart: execution-dialog
+
+  - title: fail2ban Status
+    icon: shield
+    shell: sudo fail2ban-client status
+    timeout: 10
+    popupOnStart: execution-dialog
+
+  - title: Block IP
+    icon: ban
+    shell: sudo ufw deny from {{ ip }} && echo "Blocked {{ ip }}"
+    arguments:
+      - name: ip
+        title: IP Address to block
+        type: ascii_identifier
+    timeout: 10
+    popupOnStart: execution-dialog
+
+  # ── Logs ──
+  - title: API Logs (last 50)
+    icon: file-text
+    shell: docker logs --tail 50 api 2>&1
+    timeout: 10
+    popupOnStart: execution-dialog
+
+  - title: Gateway 1 Logs (last 50)
+    icon: file-text
+    shell: docker logs --tail 50 gateway-1 2>&1
+    timeout: 10
+    popupOnStart: execution-dialog
+
+  - title: Redis Logs (last 50)
+    icon: file-text
+    shell: docker logs --tail 50 redis 2>&1
+    timeout: 10
+    popupOnStart: execution-dialog

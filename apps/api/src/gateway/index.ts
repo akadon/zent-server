@@ -30,13 +30,68 @@ const HEARTBEAT_INTERVAL = env.GATEWAY_HEARTBEAT_INTERVAL; // default 60s
 const PRESENCE_TTL = 300; // 5 minutes
 const SESSION_TTL = Math.ceil(HEARTBEAT_INTERVAL / 1000) + 30;
 const RESUME_WINDOW = 300; // 5 minutes
-const RESUME_BUFFER_MAX = 250;
+const RESUME_BUFFER_MAX = 500;
 const RESUME_BUFFER_TTL = 300; // 5 minutes
-const RESUME_CIRCUIT_BREAKER_THRESHOLD = 100_000;
+const RESUME_CIRCUIT_BREAKER_THRESHOLD = 500_000;
 const MAX_CONNECTIONS = 500_000;
 const WS_PING_INTERVAL = 30_000; // 30s TCP-level liveness check
 const NUM_SHARDS = parseInt(process.env.NUM_SHARDS || "1", 10);
 const SHARD_ID = parseInt(process.env.SHARD_ID || "0", 10);
+
+// ── Circuit Breaker ──
+
+interface CircuitBreakerState {
+  failures: number;
+  lastFailure: number;
+  state: "closed" | "open" | "half-open";
+}
+
+const CIRCUIT_FAILURE_THRESHOLD = 5;
+const CIRCUIT_RESET_TIMEOUT = 30_000; // 30s before trying half-open
+const CIRCUIT_HALF_OPEN_MAX = 1; // allow 1 request in half-open
+
+const circuits = new Map<string, CircuitBreakerState>();
+
+function getCircuit(name: string): CircuitBreakerState {
+  let c = circuits.get(name);
+  if (!c) { c = { failures: 0, lastFailure: 0, state: "closed" }; circuits.set(name, c); }
+  return c;
+}
+
+function circuitAllowRequest(name: string): boolean {
+  const c = getCircuit(name);
+  if (c.state === "closed") return true;
+  if (c.state === "open") {
+    if (Date.now() - c.lastFailure > CIRCUIT_RESET_TIMEOUT) {
+      c.state = "half-open";
+      return true;
+    }
+    return false;
+  }
+  // half-open: allow limited requests
+  return true;
+}
+
+function circuitRecordSuccess(name: string) {
+  const c = getCircuit(name);
+  c.failures = 0;
+  c.state = "closed";
+}
+
+function circuitRecordFailure(name: string) {
+  const c = getCircuit(name);
+  c.failures++;
+  c.lastFailure = Date.now();
+  if (c.failures >= CIRCUIT_FAILURE_THRESHOLD) {
+    c.state = "open";
+  }
+}
+
+// ── Request timeout helper ──
+
+function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 5000): Promise<Response> {
+  return fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+}
 
 // ── Shard helper: consistent hash to determine which shard owns a guild ──
 
@@ -161,6 +216,9 @@ const guildRooms = new Map<string, Set<WebSocket>>();
 const userRooms = new Map<string, Set<WebSocket>>();
 const sessions = new Map<WebSocket, GatewaySession>();
 
+// ── Local resume key counter (avoids redis.dbsize() on every dispatch) ──
+let resumeKeyCount = 0;
+
 function addToRoom(rooms: Map<string, Set<WebSocket>>, key: string, ws: WebSocket) {
   let room = rooms.get(key);
   if (!room) { room = new Set(); rooms.set(key, room); }
@@ -178,6 +236,13 @@ function removeFromRoom(rooms: Map<string, Set<WebSocket>>, key: string, ws: Web
 function send(ws: WebSocket, data: unknown) {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(data));
+  }
+}
+
+/** Send a pre-serialized string to avoid re-serializing per socket */
+function sendRaw(ws: WebSocket, serialized: string) {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(serialized);
   }
 }
 
@@ -211,20 +276,39 @@ async function removeSessionRedis(connId: string) {
   await redis.del(`session:${connId}`);
 }
 
-async function refreshSessionTTL(connId: string) {
-  await redis.expire(`session:${connId}`, SESSION_TTL);
+// ── Batched session TTL refresh (pipelines heartbeat Redis ops) ──
+const pendingTTLRefreshes: string[] = [];
+let ttlFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleSessionTTLRefresh(connId: string) {
+  pendingTTLRefreshes.push(connId);
+  if (!ttlFlushTimer) {
+    ttlFlushTimer = setTimeout(flushTTLRefreshes, 100);
+  }
+}
+
+async function flushTTLRefreshes() {
+  ttlFlushTimer = null;
+  if (pendingTTLRefreshes.length === 0) return;
+  const batch = pendingTTLRefreshes.splice(0);
+  const pipeline = redis.pipeline();
+  for (const connId of batch) {
+    pipeline.expire(`session:${connId}`, SESSION_TTL);
+  }
+  await pipeline.exec();
 }
 
 // ── Resume buffer in Redis ──
 
 async function pushResumeEvent(sessionId: string, payload: GatewayPayload) {
-  const resumeKeyCount = await redis.dbsize();
   if (resumeKeyCount > RESUME_CIRCUIT_BREAKER_THRESHOLD) return;
 
   const key = `resume:${sessionId}`;
+  const isNew = await redis.exists(key) === 0;
   await redis.rpush(key, JSON.stringify(payload));
   await redis.ltrim(key, -RESUME_BUFFER_MAX, -1);
   await redis.expire(key, RESUME_BUFFER_TTL);
+  if (isNew) resumeKeyCount++;
 }
 
 async function getResumeEvents(sessionId: string, afterSeq: number): Promise<GatewayPayload[]> {
@@ -236,7 +320,8 @@ async function getResumeEvents(sessionId: string, afterSeq: number): Promise<Gat
 }
 
 async function clearResumeBuffer(sessionId: string) {
-  await redis.del(`resume:${sessionId}`);
+  const deleted = await redis.del(`resume:${sessionId}`);
+  if (deleted > 0) resumeKeyCount = Math.max(0, resumeKeyCount - 1);
 }
 
 // ── Batch presence fetch from Redis ──
@@ -261,7 +346,10 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: 1_000_000,
-    perMessageDeflate: false,
+    perMessageDeflate: {
+      zlibDeflateOptions: { level: 1 },
+      threshold: 128,
+    },
   });
 
   // Handle HTTP upgrade for /gateway path
@@ -328,6 +416,14 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
         const sockets = guildRooms.get(guildId);
         if (!sockets) return;
 
+        // Pre-compute redacted data once for MESSAGE_* events
+        const isMessageEvent = parsed.event.startsWith("MESSAGE_") && parsed.data && typeof parsed.data === "object";
+        let redactedData: unknown | null = null;
+        if (isMessageEvent) {
+          const messageData = parsed.data as Record<string, unknown>;
+          redactedData = { ...messageData, content: "", embeds: [], attachments: [], components: [] };
+        }
+
         for (const ws of sockets) {
           const socketSession = sessions.get(ws);
           if (!socketSession) continue;
@@ -336,14 +432,12 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
           let eventData = parsed.data;
 
           // Redact MESSAGE_CONTENT for clients without the intent
-          if (parsed.event.startsWith("MESSAGE_") && parsed.data && typeof parsed.data === "object") {
+          if (isMessageEvent && (socketSession.intents & GatewayIntentBits.MESSAGE_CONTENT) === 0) {
             const messageData = parsed.data as Record<string, unknown>;
-            if ((socketSession.intents & GatewayIntentBits.MESSAGE_CONTENT) === 0) {
-              const mentions = (messageData.mentions as string[]) ?? [];
-              const authorId = messageData.authorId as string;
-              if (authorId !== socketSession.userId && !mentions.includes(socketSession.userId)) {
-                eventData = { ...messageData, content: "", embeds: [], attachments: [], components: [] };
-              }
+            const mentions = (messageData.mentions as string[]) ?? [];
+            const authorId = messageData.authorId as string;
+            if (authorId !== socketSession.userId && !mentions.includes(socketSession.userId)) {
+              eventData = redactedData;
             }
           }
 
@@ -723,13 +817,13 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
         suppress: false,
       };
 
-      if (config.stream.url) {
+      if (config.stream.url && circuitAllowRequest("voice")) {
         try {
           const headers: Record<string, string> = { "Content-Type": "application/json" };
           if (config.stream.internalKey) headers["x-internal-key"] = config.stream.internalKey;
 
           if (channelId) {
-            const res = await fetch(`${config.stream.url}/api/voice/${guildId}/${channelId}/join`, {
+            const res = await fetchWithTimeout(`${config.stream.url}/api/voice/${guildId}/${channelId}/join`, {
               method: "POST",
               headers,
               body: JSON.stringify({
@@ -739,7 +833,8 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
                 selfMute: selfMute ?? false,
                 selfDeaf: selfDeaf ?? false,
               }),
-            });
+            }, 5000);
+            circuitRecordSuccess("voice");
             if (res.ok) {
               const body = await res.json() as { livekitToken?: string; livekitUrl?: string };
               if (body.livekitToken && body.livekitUrl) {
@@ -751,14 +846,16 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
               }
             }
           } else {
-            await fetch(`${config.stream.url}/api/voice/${guildId}/leave`, {
+            await fetchWithTimeout(`${config.stream.url}/api/voice/${guildId}/leave`, {
               method: "POST",
               headers,
               body: JSON.stringify({ userId: session.userId }),
-            });
+            }, 5000);
+            circuitRecordSuccess("voice");
           }
         } catch (err) {
-          console.error("Voice service forwarding failed:", err);
+          circuitRecordFailure("voice");
+          console.error("Voice service forwarding failed (circuit:", getCircuit("voice").state, "):", err);
         }
       }
 
@@ -770,11 +867,10 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
       if (session) {
         session.lastHeartbeat = Date.now();
         resetHeartbeatTimer(ws);
-        const promises: Promise<any>[] = [refreshSessionTTL(session.connId)];
+        scheduleSessionTTLRefresh(session.connId);
         if (ENABLE_PRESENCE) {
-          promises.push(redis.expire(`presence:${session.userId}`, PRESENCE_TTL));
+          redis.expire(`presence:${session.userId}`, PRESENCE_TTL);
         }
-        await Promise.all(promises);
       }
       send(ws, { op: GatewayOp.HEARTBEAT_ACK, d: null });
     }
@@ -917,31 +1013,24 @@ async function setPresence(
 export function dispatchToGuild(guildId: string, event: string, data: unknown) {
   const sockets = guildRooms.get(guildId);
   if (!sockets) return;
+  // Serialize the data portion once; only sequence differs per socket
+  const dataStr = JSON.stringify(data);
   for (const ws of sockets) {
     const socketSession = sessions.get(ws);
     if (!socketSession) continue;
-    const payload: GatewayPayload = {
-      op: GatewayOp.DISPATCH,
-      t: event as any,
-      s: socketSession.sequence++,
-      d: data,
-    };
-    send(ws, payload);
+    const seq = socketSession.sequence++;
+    sendRaw(ws, `{"op":${GatewayOp.DISPATCH},"t":"${event}","s":${seq},"d":${dataStr}}`);
   }
 }
 
 export function dispatchToUser(userId: string, event: string, data: unknown) {
   const sockets = userRooms.get(userId);
   if (!sockets) return;
+  const dataStr = JSON.stringify(data);
   for (const ws of sockets) {
     const socketSession = sessions.get(ws);
     if (!socketSession) continue;
-    const payload: GatewayPayload = {
-      op: GatewayOp.DISPATCH,
-      t: event as any,
-      s: socketSession.sequence++,
-      d: data,
-    };
-    send(ws, payload);
+    const seq = socketSession.sequence++;
+    sendRaw(ws, `{"op":${GatewayOp.DISPATCH},"t":"${event}","s":${seq},"d":${dataStr}}`);
   }
 }
