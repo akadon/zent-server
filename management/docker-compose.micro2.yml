@@ -1,0 +1,70 @@
+# Management stack for Micro 2 (Registrar, AMD 1GB)
+# Lightweight: OliveTin + node-exporter + CrowdSec
+# Total RAM: ~120MB
+
+services:
+  # Prometheus node exporter — exposes host metrics for central Grafana
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+      - --web.listen-address=127.0.0.1:9100
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+          cpus: "0.1"
+
+  # OliveTin — custom management buttons
+  olivetin:
+    image: jamesread/olivetin:latest
+    container_name: olivetin
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1337:1337"
+    volumes:
+      - ./olivetin/config.yaml:/config/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /home/ubuntu/.ssh/server-key:/keys/server-key:ro
+    deploy:
+      resources:
+        limits:
+          memory: 48M
+          cpus: "0.1"
+
+  # CrowdSec — log-based intrusion detection + community blocklists
+  crowdsec:
+    image: crowdsecurity/crowdsec:latest
+    container_name: crowdsec
+    restart: unless-stopped
+    environment:
+      COLLECTIONS: "crowdsecurity/linux crowdsecurity/nginx crowdsecurity/sshd"
+      GID: "${GID-1000}"
+    volumes:
+      - crowdsec-db:/var/lib/crowdsec/data
+      - crowdsec-config:/etc/crowdsec
+      - /var/log/nginx:/var/log/nginx:ro
+      - /var/log/auth.log:/var/log/auth.log:ro
+      - /var/log/syslog:/var/log/syslog:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.15"
+
+volumes:
+  crowdsec-db:
+  crowdsec-config:

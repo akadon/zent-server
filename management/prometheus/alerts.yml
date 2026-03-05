@@ -1,0 +1,52 @@
+groups:
+  - name: host
+    rules:
+      - alert: HighCPU
+        expr: 100 - (avg by(server) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU on {{ $labels.server }} ({{ $value }}%)"
+
+      - alert: HighMemory
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory on {{ $labels.server }} ({{ $value }}%)"
+
+      - alert: DiskSpaceLow
+        expr: (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space low on {{ $labels.server }} ({{ $value }}% used)"
+
+      - alert: HostDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.server }} is unreachable"
+
+  - name: zent
+    rules:
+      - alert: ZentServiceDown
+        expr: probe_success{job=~"zent-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Zent {{ $labels.job }} is down"
+
+      - alert: HighNetworkTraffic
+        expr: rate(node_network_receive_bytes_total{device="ens3"}[5m]) > 100000000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High inbound traffic on {{ $labels.server }} ({{ humanize $value }}B/s)"

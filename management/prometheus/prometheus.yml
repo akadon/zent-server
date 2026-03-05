@@ -1,0 +1,71 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  # ── A1.Flex (this host) ──
+  - job_name: node-a1flex
+    static_configs:
+      - targets: ["host.docker.internal:9100"]
+        labels:
+          server: a1flex
+          role: main
+
+  # ── Zent services (via Docker network) ──
+  - job_name: zent-api
+    metrics_path: /health
+    static_configs:
+      - targets: ["host.docker.internal:4000"]
+    # Health endpoint returns JSON, not Prometheus format
+    # Use blackbox-style probing
+    scrape_interval: 10s
+
+  - job_name: zent-gateway
+    static_configs:
+      - targets:
+          - "host.docker.internal:4002"
+          - "host.docker.internal:4012"
+          - "host.docker.internal:4022"
+          - "host.docker.internal:4032"
+        labels:
+          service: gateway
+    metrics_path: /health
+    scrape_interval: 10s
+
+  - job_name: zent-auth
+    metrics_path: /health
+    static_configs:
+      - targets: ["host.docker.internal:4001"]
+    scrape_interval: 10s
+
+  # ── Redis ──
+  # Requires redis-exporter sidecar (optional, add later)
+
+  # ── Micro 2 (Registrar) ──
+  - job_name: node-micro2
+    static_configs:
+      - targets: ["144.21.37.202:9100"]
+        labels:
+          server: micro2
+          role: registrar
+    # node-exporter on micro2 binds to 127.0.0.1
+    # Requires SSH tunnel or binding to VCN IP
+    # For now, use the VCN internal IP if available
+
+  # ── Micro 1 (SeaweedFS S3) ──
+  - job_name: node-micro1
+    static_configs:
+      - targets: ["158.101.199.90:9100"]
+        labels:
+          server: micro1
+          role: seaweedfs
+
+  # ── CrowdSec metrics ──
+  - job_name: crowdsec
+    static_configs:
+      - targets: ["host.docker.internal:6060"]
+        labels:
+          service: crowdsec

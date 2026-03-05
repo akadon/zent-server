@@ -36,6 +36,7 @@ import { startBackgroundJobs } from "./jobs/index.js";
 import { ApiError } from "./services/auth.service.js";
 import { ZodError } from "zod";
 import { globalRateLimit } from "./middleware/rateLimit.js";
+import { loadSheddingMiddleware, getEventLoopLag } from "./middleware/loadShedding.js";
 
 // Dynamic worker ID from pod hostname for unique snowflake IDs across replicas
 function hashCode(str: string): number {
@@ -95,6 +96,9 @@ app.addContentTypeParser(
     }
   }
 );
+
+// Load shedding (must be first — reject early under pressure)
+app.addHook("preHandler", loadSheddingMiddleware);
 
 // Global rate limiting
 app.addHook("preHandler", globalRateLimit);
@@ -171,8 +175,16 @@ await app.register(forumTagRoutes, { prefix: "/api" });
 await app.register(sessionRoutes, { prefix: "/api" });
 await app.register(cdnRoutes); // CDN routes at root (no /api prefix)
 
-// Health check with dependency verification
-app.get("/health", async () => {
+// Health check with dependency verification + draining awareness
+let draining = false;
+
+app.get("/health", async (_request, reply) => {
+  // If draining, return 503 so load balancer stops sending traffic
+  if (draining) {
+    reply.status(503);
+    return { status: "draining", pod: process.env.HOSTNAME };
+  }
+
   const checks: Record<string, string> = { api: "ok" };
   try {
     await db.execute(sql`SELECT 1`);
@@ -186,9 +198,40 @@ app.get("/health", async () => {
   } catch {
     checks.redis = "error";
   }
-  const allOk = Object.values(checks).every(v => v === "ok");
+  const lag = getEventLoopLag();
+  checks.eventLoopLag = `${lag}ms`;
+  if (lag > 500) checks.eventLoop = "degraded";
+
+  const allOk = checks.database === "ok" && checks.redis === "ok" && (!checks.eventLoop || checks.eventLoop === "ok");
   return { status: allOk ? "ok" : "degraded", checks, pod: process.env.HOSTNAME };
 });
+
+// Graceful shutdown handler
+const DRAIN_TIMEOUT = 15_000; // 15s to finish in-flight requests
+
+async function gracefulShutdown(signal: string) {
+  console.log(`${signal} received — starting graceful shutdown`);
+  draining = true;
+
+  // Give load balancer time to detect health failure and stop routing
+  await new Promise((r) => setTimeout(r, 5000));
+
+  // Close Fastify (stops accepting new connections, finishes in-flight)
+  try {
+    await Promise.race([
+      app.close(),
+      new Promise((r) => setTimeout(r, DRAIN_TIMEOUT)),
+    ]);
+  } catch (err) {
+    console.error("Error during shutdown:", err);
+  }
+
+  // Close Redis connections
+  try { await redis.quit(); } catch {}
+
+  console.log("Shutdown complete");
+  process.exit(0);
+}
 
 // Start server
 const start = async () => {
@@ -204,6 +247,10 @@ const start = async () => {
 
     // Start background jobs (scheduled messages, cleanup)
     startBackgroundJobs();
+
+    // Register shutdown handlers
+    process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+    process.on("SIGINT", () => gracefulShutdown("SIGINT"));
   } catch (err) {
     app.log.error(err);
     process.exit(1);
