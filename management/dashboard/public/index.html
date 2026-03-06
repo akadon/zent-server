@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zent Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">Zent Admin</div>
+    <div class="nav-section">Server</div>
+    <a href="#" class="nav-item active" data-page="dashboard">Dashboard</a>
+    <a href="#" class="nav-item" data-page="services">Services</a>
+    <a href="#" class="nav-item" data-page="redis">Redis</a>
+    <a href="#" class="nav-item" data-page="logs">Logs</a>
+    <a href="#" class="nav-item" data-page="actions">Actions</a>
+    <a href="#" class="nav-item" data-page="terminal">Terminal</a>
+    <div class="nav-section">Kubernetes</div>
+    <a href="#" class="nav-item" data-page="k8s-overview">Overview</a>
+    <a href="#" class="nav-item" data-page="k8s-pods">Pods</a>
+    <a href="#" class="nav-item" data-page="k8s-deployments">Deployments</a>
+    <a href="#" class="nav-item" data-page="k8s-services">Services</a>
+    <a href="#" class="nav-item" data-page="k8s-nodes">Nodes</a>
+    <a href="#" class="nav-item" data-page="k8s-events">Events</a>
+    <a href="#" class="nav-item" data-page="k8s-terminal">kubectl</a>
+    <div class="nav-footer">
+      <label class="auto-refresh">
+        <input type="checkbox" id="auto-refresh" checked> Auto-refresh
+      </label>
+      <span id="last-update"></span>
+    </div>
+  </nav>
+  <main class="content" id="content">
+    <div class="page active" id="page-dashboard"></div>
+    <div class="page" id="page-services"></div>
+    <div class="page" id="page-redis"></div>
+    <div class="page" id="page-logs"></div>
+    <div class="page" id="page-actions"></div>
+    <div class="page" id="page-terminal"></div>
+    <div class="page" id="page-k8s-overview"></div>
+    <div class="page" id="page-k8s-pods"></div>
+    <div class="page" id="page-k8s-deployments"></div>
+    <div class="page" id="page-k8s-services"></div>
+    <div class="page" id="page-k8s-nodes"></div>
+    <div class="page" id="page-k8s-events"></div>
+    <div class="page" id="page-k8s-terminal"></div>
+  </main>
+  <div id="action-modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header"><span id="modal-title">Output</span><button onclick="closeModal()">&times;</button></div>
+      <pre id="modal-output"></pre>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
