@@ -32,6 +32,11 @@ export async function guildRoutes(app: FastifyInstance) {
   // ── Guild CRUD ──
 
   app.post("/guilds", async (request, reply) => {
+    const caller = await getUserById(request.userId);
+    if (caller?.isGuest) {
+      throw new ApiError(403, "Guest accounts cannot create guilds");
+    }
+
     const body = z
       .object({
         name: z.string().min(2).max(100),
@@ -394,7 +399,7 @@ export async function guildRoutes(app: FastifyInstance) {
         roleId: string;
       };
       await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_ROLES);
-      await roleService.addRoleToMember(guildId, userId, roleId);
+      await roleService.addRoleToMember(guildId, userId, roleId, request.userId);
       const roles = await roleService.getMemberRoles(guildId, userId);
       await dispatchGuild(guildId, "GUILD_MEMBER_UPDATE", { guildId, userId, roles });
       await auditlogService.createAuditLogEntry(guildId, request.userId, AuditLogActionType.MEMBER_ROLE_UPDATE, userId);
@@ -411,7 +416,7 @@ export async function guildRoutes(app: FastifyInstance) {
         roleId: string;
       };
       await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_ROLES);
-      await roleService.removeRoleFromMember(guildId, userId, roleId);
+      await roleService.removeRoleFromMember(guildId, userId, roleId, request.userId);
       const roles = await roleService.getMemberRoles(guildId, userId);
       await dispatchGuild(guildId, "GUILD_MEMBER_UPDATE", { guildId, userId, roles });
       await auditlogService.createAuditLogEntry(guildId, request.userId, AuditLogActionType.MEMBER_ROLE_UPDATE, userId);
@@ -458,6 +463,16 @@ export async function guildRoutes(app: FastifyInstance) {
   app.get("/invites/:code", async (request, reply) => {
     const { code } = request.params as { code: string };
     const invite = await inviteService.getInvite(code);
+
+    // Only guild members can view full invite details
+    if (!(await guildService.isMember(request.userId, invite.guildId))) {
+      // Return minimal info for non-members (enough to decide whether to join)
+      return reply.send({
+        code: invite.code,
+        guildId: invite.guildId,
+      });
+    }
+
     return reply.send(invite);
   });
 
@@ -939,9 +954,9 @@ export async function guildRoutes(app: FastifyInstance) {
 
     if (body.roles !== undefined) {
       await permissionService.requireGuildPermission(request.userId, guildId, PermissionFlags.MANAGE_ROLES);
-      // Update member roles
+      // Update member roles (with hierarchy validation)
       for (const roleId of body.roles) {
-        await roleService.addRoleToMember(guildId, userId, roleId);
+        await roleService.addRoleToMember(guildId, userId, roleId, request.userId);
       }
     }
 
@@ -1120,6 +1135,10 @@ export async function guildRoutes(app: FastifyInstance) {
   // Get guild widget settings
   app.get("/guilds/:guildId/widget", async (request, reply) => {
     const { guildId } = request.params as { guildId: string };
+
+    if (!(await guildService.isMember(request.userId, guildId))) {
+      throw new ApiError(403, "Not a member of this guild");
+    }
 
     const widget = await guildSettingsRepository.findWidget(guildId);
 

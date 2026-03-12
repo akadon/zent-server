@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { register, login, getUserById, invalidateUserCache, ApiError } from "../../services/auth.service.js";
+import { register, login, guestLogin, claimGuestAccount, getUserById, invalidateUserCache, ApiError } from "../../services/auth.service.js";
 import { authMiddleware } from "../../middleware/auth.js";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 
@@ -34,6 +34,39 @@ export async function authRoutes(app: FastifyInstance) {
     const result = await login(body.email, body.password);
     return reply.send(result);
   });
+
+  app.post("/auth/guest", { preHandler: [createRateLimiter("guestLogin")] }, async (request, reply) => {
+    const result = await guestLogin();
+    return reply.status(201).send(result);
+  });
+
+  app.post(
+    "/auth/claim",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const body = z
+        .object({
+          email: z.string().email().max(254),
+          username: z
+            .string()
+            .min(2)
+            .max(32)
+            .regex(/^[a-zA-Z0-9_]+$/, "Username can only contain letters, numbers, and underscores"),
+          password: z
+            .string()
+            .min(8)
+            .max(128)
+            .regex(
+              /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/,
+              "Password must contain uppercase, lowercase, and a number"
+            ),
+        })
+        .parse(request.body);
+
+      const user = await claimGuestAccount(request.userId, body.email, body.username, body.password);
+      return reply.send({ user });
+    }
+  );
 
   app.get(
     "/users/@me",

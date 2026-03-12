@@ -1,4 +1,5 @@
 import bcrypt from "bcrypt";
+import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { env } from "../config/env.js";
 import { generateSnowflake } from "@yxc/snowflake";
@@ -11,6 +12,7 @@ const MFA_TICKET_EXPIRY = "5m";
 
 export interface TokenPayload {
   userId: string;
+  tokenVersion?: number;
 }
 
 export async function hashPassword(password: string): Promise<string> {
@@ -21,8 +23,10 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
   return bcrypt.compare(password, hash);
 }
 
-export function generateToken(userId: string): string {
-  return jwt.sign({ userId } satisfies TokenPayload, env.AUTH_SECRET, {
+export async function generateToken(userId: string): Promise<string> {
+  const versionStr = await redis.get(`user:token_version:${userId}`);
+  const tokenVersion = versionStr ? parseInt(versionStr, 10) : 0;
+  return jwt.sign({ userId, tokenVersion } satisfies TokenPayload, env.AUTH_SECRET, {
     expiresIn: TOKEN_EXPIRY,
   });
 }
@@ -30,9 +34,17 @@ export function generateToken(userId: string): string {
 export async function verifyToken(token: string): Promise<TokenPayload> {
   const payload = jwt.verify(token, env.AUTH_SECRET) as TokenPayload;
 
-  // Check if token has been revoked
+  // Check if token has been revoked (individual token)
   const revoked = await redis.get(`token:revoked:${token}`);
   if (revoked) {
+    throw new ApiError(401, "Token has been revoked");
+  }
+
+  // Check token version against Redis (covers revokeAllUserTokens)
+  const currentVersionStr = await redis.get(`user:token_version:${payload.userId}`);
+  const currentVersion = currentVersionStr ? parseInt(currentVersionStr, 10) : 0;
+  const tokenVersion = payload.tokenVersion ?? 0;
+  if (tokenVersion < currentVersion) {
     throw new ApiError(401, "Token has been revoked");
   }
 
@@ -100,7 +112,7 @@ export async function register(email: string, username: string, password: string
     passwordHash,
   });
 
-  const token = generateToken(user.id);
+  const token = await generateToken(user.id);
   return { token, user: { ...user, createdAt: user.createdAt.toISOString() } };
 }
 
@@ -127,7 +139,7 @@ export async function login(email: string, password: string) {
     };
   }
 
-  const token = generateToken(user.id);
+  const token = await generateToken(user.id);
 
   return {
     mfa: false,
@@ -175,6 +187,66 @@ export async function getUserById(userId: string) {
 
 export async function invalidateUserCache(userId: string) {
   await redis.del(`user:${userId}`);
+}
+
+// ── Guest login ──
+
+export async function guestLogin() {
+  const id = generateSnowflake();
+  const suffix = crypto.randomBytes(3).toString("hex"); // 6 hex chars
+  const username = `Guest_${suffix}`;
+  const guestExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+  const user = await userRepository.create({
+    id,
+    email: `guest_${id}@guest.local`,
+    username,
+    passwordHash: "",
+    isGuest: true,
+    guestExpiresAt,
+  });
+
+  const token = await generateToken(user.id);
+  const { passwordHash: _, mfaSecret: _s, mfaBackupCodes: _b, ...safeUser } = user;
+  return { token, user: { ...safeUser, createdAt: user.createdAt.toISOString() } };
+}
+
+export async function claimGuestAccount(
+  userId: string,
+  email: string,
+  username: string,
+  password: string
+) {
+  const user = await userRepository.findById(userId);
+  if (!user || !user.isGuest) {
+    throw new ApiError(400, "Not a guest account");
+  }
+
+  const existingEmail = await userRepository.findByEmail(email.toLowerCase());
+  if (existingEmail) {
+    throw new ApiError(409, "Email already registered");
+  }
+
+  const existingUsername = await userRepository.findByUsername(username);
+  if (existingUsername && existingUsername.id !== userId) {
+    throw new ApiError(409, "Username taken");
+  }
+
+  const passwordHash = await hashPassword(password);
+  await userRepository.update(userId, {
+    email: email.toLowerCase(),
+    username,
+    passwordHash,
+    isGuest: false,
+    guestExpiresAt: null,
+  });
+
+  await invalidateUserCache(userId);
+
+  const updated = await userRepository.findById(userId);
+  if (!updated) throw new ApiError(500, "Failed to update account");
+  const { passwordHash: _, mfaSecret: _s, mfaBackupCodes: _b, ...safeUser } = updated;
+  return safeUser;
 }
 
 // ── Error class ──

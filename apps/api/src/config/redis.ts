@@ -10,25 +10,31 @@ function jitteredBackoff(times: number): number {
 }
 
 export const redis = new Redis(env.REDIS_URL, {
-  maxRetriesPerRequest: 10,
+  maxRetriesPerRequest: 20,
   enableAutoPipelining: true,
   lazyConnect: true,
   connectTimeout: 5000,
+  keepAlive: 10000,
   retryStrategy: jitteredBackoff,
 });
+redis.on('error', (err) => console.error('[redis] Error:', err.message));
 
 // Separate connection for pub/sub (ioredis requires dedicated connections for subscribers)
 export const redisSub = new Redis(env.REDIS_URL, {
-  maxRetriesPerRequest: 10,
+  maxRetriesPerRequest: null,
   lazyConnect: true,
   connectTimeout: 5000,
+  keepAlive: 10000,
   retryStrategy: jitteredBackoff,
 });
+redisSub.on('error', (err) => console.error('[redisSub] Error:', err.message));
 
 export const redisPub = new Redis(env.REDIS_URL, {
-  maxRetriesPerRequest: 10,
+  maxRetriesPerRequest: 20,
   enableAutoPipelining: true,
   lazyConnect: true,
   connectTimeout: 5000,
+  keepAlive: 10000,
   retryStrategy: jitteredBackoff,
 });
+redisPub.on('error', (err) => console.error('[redisPub] Error:', err.message));

@@ -131,7 +131,7 @@ export async function passkeyRoutes(app: FastifyInstance) {
         }
       );
 
-      const token = generateToken(userId);
+      const token = await generateToken(userId);
       return reply.send({ token });
     }
   );

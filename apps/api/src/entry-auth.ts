@@ -11,14 +11,22 @@ import { verificationRoutes } from "./rest/routes/verification.js";
 import { ApiError } from "./services/auth.service.js";
 import { ZodError } from "zod";
 import { globalRateLimit } from "./middleware/rateLimit.js";
+import { redis } from "./config/redis.js";
+import { db } from "./db/index.js";
+import { sql } from "drizzle-orm";
 
 const PORT = parseInt(process.env.AUTH_PORT || "4001");
 
 const app = Fastify({
+  trustProxy: true,
   logger: { level: "info" },
 });
 
-await app.register(cors, { origin: true, credentials: true, maxAge: 86400 });
+await app.register(cors, {
+  origin: env.CORS_ORIGIN ? env.CORS_ORIGIN.split(",") : ["http://localhost:3000"],
+  credentials: true,
+  maxAge: 86400,
+});
 await app.register(cookie);
 
 app.addHook("preHandler", globalRateLimit);
@@ -48,7 +56,24 @@ app.get("/health", async (_request, reply) => {
     reply.status(503);
     return { status: "draining", service: "auth", pod: process.env.HOSTNAME };
   }
-  return { status: "ok", service: "auth", pod: process.env.HOSTNAME };
+
+  const checks: Record<string, string> = { auth: "ok" };
+  try {
+    await db.execute(sql`SELECT 1`);
+    checks.database = "ok";
+  } catch {
+    checks.database = "error";
+  }
+  try {
+    await redis.ping();
+    checks.redis = "ok";
+  } catch {
+    checks.redis = "error";
+  }
+
+  const allOk = checks.database === "ok" && checks.redis === "ok";
+  if (!allOk) reply.status(503);
+  return { status: allOk ? "ok" : "degraded", service: "auth", checks, pod: process.env.HOSTNAME };
 });
 
 await app.listen({ port: PORT, host: "0.0.0.0" });

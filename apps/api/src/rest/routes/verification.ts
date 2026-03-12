@@ -28,13 +28,17 @@ export async function verificationRoutes(app: FastifyInstance) {
       // Store in Redis with TTL
       await redis.setex(`verification:${request.userId}`, VERIFICATION_CODE_TTL, code);
 
-      // In production, this would send an email to user.email
-      // For development, log the code
-      if (process.env.NODE_ENV !== "production") {
-        console.log(`Verification code for ${user.email}: ${code}`);
-      }
+      // TODO: In production with SMTP configured, send the code via email instead
+      // of returning it in the response. For self-hosted instances without SMTP,
+      // the code is returned directly so the frontend can display it to the user.
+      console.log(`Verification code for ${user.email}: ${code}`);
 
-      return reply.send({ success: true, message: "Verification code sent" });
+      return reply.send({
+        success: true,
+        message: "Verification code generated",
+        code,
+        expiresIn: VERIFICATION_CODE_TTL,
+      });
     }
   );
 

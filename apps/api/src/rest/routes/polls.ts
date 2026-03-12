@@ -27,6 +27,19 @@ export async function pollRoutes(app: FastifyInstance) {
   // Create a poll (creates a message with a poll attached)
   app.post("/channels/:channelId/polls", async (request, reply) => {
     const { channelId } = request.params as { channelId: string };
+
+    // Check channel permissions before creating the poll
+    const channel = await channelService.getChannel(channelId);
+    if (!channel) throw new ApiError(404, "Channel not found");
+    if (channel.guildId) {
+      await permissionService.requireChannelPermission(
+        request.userId,
+        channel.guildId,
+        channelId,
+        PermissionFlags.SEND_MESSAGES
+      );
+    }
+
     const body = z
       .object({
         question: z.string().min(1).max(300),

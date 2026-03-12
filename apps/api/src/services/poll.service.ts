@@ -1,6 +1,7 @@
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
 import { pollRepository } from "../repositories/poll.repository.js";
+import { db } from "../db/index.js";
 
 export async function createPoll(
   channelId: string,
@@ -138,16 +139,26 @@ export async function votePoll(pollId: string, optionId: string, userId: string)
   const option = await pollRepository.findOption(pollId, optionId);
   if (!option) throw new ApiError(404, "Option not found");
 
-  // If not multiselect, remove existing vote first
-  if (!poll.allowMultiselect) {
-    await pollRepository.deleteVotesByUser(pollId, userId);
-  }
+  // Wrap vote logic in a transaction to prevent TOCTOU race conditions.
+  // The poll_votes table has a composite primary key (pollId, optionId, userId)
+  // which acts as a unique constraint, so duplicate inserts will fail atomically.
+  await db.transaction(async (tx) => {
+    // If not multiselect, remove existing votes for this user first
+    if (!poll.allowMultiselect) {
+      await pollRepository.deleteVotesByUserInTx(tx, pollId, userId);
+    }
 
-  // Check for duplicate vote on same option
-  const existing = await pollRepository.findVote(pollId, optionId, userId);
-  if (existing) throw new ApiError(400, "Already voted for this option");
-
-  await pollRepository.createVote(pollId, optionId, userId);
+    // Insert the vote — the primary key constraint prevents duplicates
+    try {
+      await pollRepository.createVoteInTx(tx, pollId, optionId, userId);
+    } catch (err: any) {
+      // MySQL duplicate key error code: ER_DUP_ENTRY
+      if (err.code === "ER_DUP_ENTRY" || err.errno === 1062) {
+        throw new ApiError(400, "Already voted for this option");
+      }
+      throw err;
+    }
+  });
 
   return { pollId, optionId, userId, channelId: poll.channelId, messageId: poll.messageId };
 }

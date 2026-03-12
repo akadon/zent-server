@@ -1,4 +1,4 @@
-import { eq, or, inArray } from "drizzle-orm";
+import { eq, or, inArray, and, lt } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 
 export const userRepository = {
@@ -20,7 +20,7 @@ export const userRepository = {
       .limit(1);
     return existing ?? null;
   },
-  async create(data: { id: string; username: string; email: string; passwordHash: string }) {
+  async create(data: { id: string; username: string; email: string; passwordHash: string; isGuest?: boolean; guestExpiresAt?: Date | null }) {
     await db.insert(schema.users).values(data);
     return (await db.select().from(schema.users).where(eq(schema.users.id, data.id)).limit(1))[0]!;
   },
@@ -70,5 +70,20 @@ export const userRepository = {
   },
   async deleteActivities(userId: string) {
     await db.delete(schema.userActivities).where(eq(schema.userActivities.userId, userId));
+  },
+  async findExpiredGuests(limit: number = 100) {
+    return db.select({ id: schema.users.id })
+      .from(schema.users)
+      .where(
+        and(
+          eq(schema.users.isGuest, true),
+          lt(schema.users.guestExpiresAt, new Date())
+        )
+      )
+      .limit(limit);
+  },
+  async deleteByIds(ids: string[]) {
+    if (ids.length === 0) return;
+    await db.delete(schema.users).where(inArray(schema.users.id, ids));
   },
 };

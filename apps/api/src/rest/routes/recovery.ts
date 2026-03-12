@@ -77,7 +77,7 @@ export async function recoveryRoutes(app: FastifyInstance) {
         });
       }
 
-      const token = generateToken(user.id);
+      const token = await generateToken(user.id);
 
       return reply.send({ token });
     }

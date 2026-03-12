@@ -35,6 +35,19 @@ const RESUME_BUFFER_TTL = 300; // 5 minutes
 const RESUME_CIRCUIT_BREAKER_THRESHOLD = 500_000;
 const MAX_CONNECTIONS = 500_000;
 const WS_PING_INTERVAL = 30_000; // 30s TCP-level liveness check
+
+// ── Backpressure thresholds ──
+const HIGH_WATER_MARK = 1 * 1024 * 1024; // 1MB – drop non-critical messages
+const MAX_BUFFER = 4 * 1024 * 1024; // 4MB – terminate the connection
+
+// ── Per-IP connection limits ──
+const connectionsPerIp = new Map<string, number>();
+const MAX_PER_IP = 10;
+
+// ── Pre-auth (IP-based) rate limiting for IDENTIFY ──
+const identifyAttemptsPerIp = new Map<string, { count: number; windowStart: number }>();
+const IDENTIFY_IP_MAX = 10; // max IDENTIFY attempts per IP per window
+const IDENTIFY_IP_WINDOW = 60_000; // 60s window
 const NUM_SHARDS = parseInt(process.env.NUM_SHARDS || "1", 10);
 const SHARD_ID = parseInt(process.env.SHARD_ID || "0", 10);
 
@@ -234,16 +247,24 @@ function removeFromRoom(rooms: Map<string, Set<WebSocket>>, key: string, ws: Web
 }
 
 function send(ws: WebSocket, data: unknown) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(data));
+  if (ws.readyState !== WebSocket.OPEN) return;
+  if (ws.bufferedAmount > MAX_BUFFER) {
+    ws.terminate(); // Force close slow consumer
+    return;
   }
+  if (ws.bufferedAmount > HIGH_WATER_MARK) return; // Drop message for slow client
+  ws.send(JSON.stringify(data));
 }
 
 /** Send a pre-serialized string to avoid re-serializing per socket */
 function sendRaw(ws: WebSocket, serialized: string) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(serialized);
+  if (ws.readyState !== WebSocket.OPEN) return;
+  if (ws.bufferedAmount > MAX_BUFFER) {
+    ws.terminate();
+    return;
   }
+  if (ws.bufferedAmount > HIGH_WATER_MARK) return;
+  ws.send(serialized);
 }
 
 // ── Redis-backed session storage ──
@@ -361,7 +382,20 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
         socket.destroy();
         return;
       }
+
+      // Per-IP connection limit
+      const ip = (socket as any).remoteAddress ?? "unknown";
+      const currentCount = connectionsPerIp.get(ip) ?? 0;
+      if (currentCount >= MAX_PER_IP) {
+        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      connectionsPerIp.set(ip, currentCount + 1);
+
       wss.handleUpgrade(request, socket, head, (ws) => {
+        // Attach IP for decrement on close
+        (ws as any).__ip = ip;
         wss.emit("connection", ws, request);
       });
     }
@@ -382,6 +416,13 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
             delete sess.rateLimits[opNum];
           }
         }
+      }
+    }
+
+    // Clean up expired IP-based IDENTIFY rate limit buckets
+    for (const [ip, bucket] of identifyAttemptsPerIp) {
+      if (now - bucket.windowStart > IDENTIFY_IP_WINDOW) {
+        identifyAttemptsPerIp.delete(ip);
       }
     }
   }, 60_000);
@@ -522,9 +563,33 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
         }
 
         switch (payload.op) {
-          case GatewayOp.IDENTIFY:
+          case GatewayOp.IDENTIFY: {
+            // Double-IDENTIFY guard: reject if already identified
+            if (session) {
+              send(ws, { op: GatewayOp.INVALID_SESSION, d: false });
+              return;
+            }
+
+            // Pre-auth IP-based rate limiting for IDENTIFY
+            const identifyIp = (ws as any).__ip as string | undefined;
+            if (identifyIp) {
+              const now = Date.now();
+              const bucket = identifyAttemptsPerIp.get(identifyIp);
+              if (!bucket || now - bucket.windowStart > IDENTIFY_IP_WINDOW) {
+                identifyAttemptsPerIp.set(identifyIp, { count: 1, windowStart: now });
+              } else {
+                bucket.count++;
+                if (bucket.count > IDENTIFY_IP_MAX) {
+                  send(ws, { op: GatewayOp.INVALID_SESSION, d: false });
+                  ws.close();
+                  return;
+                }
+              }
+            }
+
             await handleIdentify(ws, connId, payload.d as IdentifyPayload);
             break;
+          }
           case GatewayOp.HEARTBEAT:
             await handleHeartbeat(ws);
             break;
@@ -554,6 +619,17 @@ export function createGateway(httpServer: HttpServer): WebSocketServer {
 
     ws.on("close", async () => {
       (ws as any).__alive = false;
+
+      // Decrement per-IP connection counter
+      const ip = (ws as any).__ip as string | undefined;
+      if (ip) {
+        const count = connectionsPerIp.get(ip) ?? 1;
+        if (count <= 1) {
+          connectionsPerIp.delete(ip);
+        } else {
+          connectionsPerIp.set(ip, count - 1);
+        }
+      }
 
       if (session) {
         if (session.heartbeatTimer) clearTimeout(session.heartbeatTimer);

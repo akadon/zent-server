@@ -67,8 +67,14 @@ export async function executeWebhook(
 ) {
   const webhook = await webhookRepository.findById(webhookId);
 
-  if (!webhook || webhook.token !== token)
+  if (!webhook || !webhook.token) throw new ApiError(404, "Webhook not found or invalid token");
+
+  // Use timing-safe comparison to prevent timing attacks on the token
+  const expected = Buffer.from(webhook.token, "utf8");
+  const provided = Buffer.from(token, "utf8");
+  if (expected.length !== provided.length || !crypto.timingSafeEqual(expected, provided)) {
     throw new ApiError(404, "Webhook not found or invalid token");
+  }
 
   const id = generateSnowflake();
 

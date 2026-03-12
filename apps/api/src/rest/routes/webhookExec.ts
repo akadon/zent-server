@@ -3,10 +3,13 @@ import { z } from "zod";
 import * as webhookService from "../../services/webhook.service.js";
 import * as channelService from "../../services/channel.service.js";
 import { redisPub } from "../../config/redis.js";
+import { createRateLimiter } from "../../middleware/rateLimit.js";
 
 /** Public webhook execution — no auth required, uses webhook token */
 export async function publicWebhookRoutes(app: FastifyInstance) {
-  app.post("/webhooks/:webhookId/:token", async (request, reply) => {
+  app.post("/webhooks/:webhookId/:token", {
+    preHandler: [createRateLimiter("webhookExec", (req) => (req.params as any).webhookId)],
+  }, async (request, reply) => {
     const { webhookId, token } = request.params as {
       webhookId: string;
       token: string;

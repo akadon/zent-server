@@ -4,6 +4,7 @@ import * as messageService from "../services/message.service.js";
 import * as channelService from "../services/channel.service.js";
 import { messageRepository } from "../repositories/message.repository.js";
 import { channelRepository } from "../repositories/channel.repository.js";
+import { userRepository } from "../repositories/user.repository.js";
 
 const POD_NAME = process.env.HOSTNAME || "default";
 const LEADER_KEY = "zent:jobs:leader";
@@ -100,6 +101,21 @@ async function cleanupExpiredMessages() {
   }
 }
 
+// Clean up expired guest accounts every hour
+async function cleanupExpiredGuests() {
+  if (!isLeader) return;
+  try {
+    const expired = await userRepository.findExpiredGuests(100);
+    if (expired.length === 0) return;
+
+    const ids = expired.map((u) => u.id);
+    await userRepository.deleteByIds(ids);
+    console.log(`[${POD_NAME}] Cleaned up ${ids.length} expired guest account(s)`);
+  } catch (err) {
+    console.error("Error cleaning up expired guests:", err);
+  }
+}
+
 export function startBackgroundJobs() {
   console.log(`[${POD_NAME}] Starting background jobs with leader election...`);
 
@@ -117,9 +133,11 @@ export function startBackgroundJobs() {
   setInterval(leaderLoop, LEADER_RENEW_INTERVAL);
   setInterval(processScheduledMessages, 10_000);
   setInterval(cleanupExpiredMessages, 30_000);
+  setInterval(cleanupExpiredGuests, 3_600_000); // every hour
 
   setTimeout(() => {
     processScheduledMessages();
     cleanupExpiredMessages();
+    cleanupExpiredGuests();
   }, 2000);
 }
