@@ -7,6 +7,9 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push"
@@ -16,8 +19,8 @@
     "@yxc/snowflake": "*",
     "@yxc/types": "*",
     "@yxc/gateway-types": "*",
-    "fastify": "^5.2.0",
-    "@fastify/cors": "^10.0.0",
+    "fastify": "^5.8.1",
+    "@fastify/cors": "^10.0.3",
     "@fastify/cookie": "^11.0.0",
     "@fastify/websocket": "^11.0.0",
     "drizzle-orm": "^0.38.0",
@@ -33,7 +36,7 @@
     "utf-8-validate": "^6.0.4",
     "pino-pretty": "^13.0.0",
     "minio": "^8.0.0",
-    "@fastify/multipart": "^9.0.0"
+    "@fastify/multipart": "^9.0.3"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.0",
@@ -42,6 +45,7 @@
     "@types/ws": "^8.5.0",
     "drizzle-kit": "^0.30.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   }
 }

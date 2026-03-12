@@ -14,6 +14,7 @@ interface RateLimitConfig {
 const DEFAULTS: Record<string, RateLimitConfig> = {
   global: { max: 50, window: 1, keyPrefix: "rl:global" },
   auth: { max: 5, window: 60, keyPrefix: "rl:auth" },
+  guestLogin: { max: 3, window: 60, keyPrefix: "rl:guest" },
   messageCreate: { max: 5, window: 5, keyPrefix: "rl:msg" },
   messageDelete: { max: 5, window: 1, keyPrefix: "rl:msgdel" },
   channelEdit: { max: 10, window: 10, keyPrefix: "rl:ch" },
@@ -21,6 +22,7 @@ const DEFAULTS: Record<string, RateLimitConfig> = {
   inviteCreate: { max: 5, window: 60, keyPrefix: "rl:invite" },
   typing: { max: 10, window: 10, keyPrefix: "rl:typing" },
   reaction: { max: 10, window: 5, keyPrefix: "rl:react" },
+  webhookExec: { max: 5, window: 5, keyPrefix: "rl:webhook" },
 };
 
 // Lua script for atomic sliding window rate limiting
@@ -96,20 +98,21 @@ function setRateLimitHeaders(reply: FastifyReply, config: RateLimitConfig, remai
 }
 
 function getClientIp(request: FastifyRequest): string {
-  const forwarded = request.headers["x-forwarded-for"];
-  if (forwarded) {
-    const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded).split(",")[0]!.trim();
-    if (first) return first;
-  }
+  // Fastify handles X-Forwarded-For correctly when trustProxy is enabled.
+  // Never parse X-Forwarded-For manually — it's trivially spoofable.
   return request.ip;
 }
 
-export function createRateLimiter(bucket: keyof typeof DEFAULTS) {
+export function createRateLimiter(
+  bucket: keyof typeof DEFAULTS,
+  identifierFn?: (request: FastifyRequest) => string
+) {
   const config = DEFAULTS[bucket]!;
 
   return async function rateLimitMiddleware(request: FastifyRequest, reply: FastifyReply) {
-    // Use userId if authed, otherwise real client IP (respecting X-Forwarded-For)
-    const identifier = (request as any).userId ?? getClientIp(request);
+    const identifier = identifierFn
+      ? identifierFn(request)
+      : (request as any).userId ?? getClientIp(request);
     const result = await checkRateLimit(identifier, config);
 
     setRateLimitHeaders(reply, config, result.remaining, result.resetAfter);

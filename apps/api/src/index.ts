@@ -7,7 +7,7 @@ import { env } from "./config/env.js";
 import { config } from "./config/config.js";
 import { initSnowflake } from "@yxc/snowflake";
 import { db } from "./db/index.js";
-import { redis } from "./config/redis.js";
+import { redis, redisPub, redisSub } from "./config/redis.js";
 import { sql } from "drizzle-orm";
 import { authRoutes } from "./rest/routes/auth.js";
 import { guildRoutes } from "./rest/routes/guilds.js";
@@ -55,6 +55,7 @@ initSnowflake(workerId, processId);
 console.log(`Snowflake initialized: workerId=${workerId}, processId=${processId} (pod: ${podName})`);
 
 const app = Fastify({
+  trustProxy: true,
   logger: {
     level: env.NODE_ENV === "production" ? "warn" : "debug",
     transport:
@@ -96,6 +97,14 @@ app.addContentTypeParser(
     }
   }
 );
+
+// Defense-in-depth: reject Content-Type headers with tab/control characters (CVE-2024-58027)
+app.addHook('onRequest', async (request, reply) => {
+  const ct = request.headers['content-type'];
+  if (ct && /[\t\x00-\x1f]/.test(ct)) {
+    reply.status(400).send({ statusCode: 400, message: 'Invalid Content-Type' });
+  }
+});
 
 // Load shedding (must be first — reject early under pressure)
 app.addHook("preHandler", loadSheddingMiddleware);
@@ -228,6 +237,8 @@ async function gracefulShutdown(signal: string) {
 
   // Close Redis connections
   try { await redis.quit(); } catch {}
+  try { await redisPub.quit(); } catch {}
+  try { await redisSub.quit(); } catch {}
 
   console.log("Shutdown complete");
   process.exit(0);

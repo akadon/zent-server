@@ -9,10 +9,15 @@ import { globalRateLimit } from "./middleware/rateLimit.js";
 const PORT = parseInt(process.env.CDN_PORT || "4003");
 
 const app = Fastify({
+  trustProxy: true,
   logger: { level: "info" },
 });
 
-await app.register(cors, { origin: true, credentials: true, maxAge: 86400 });
+await app.register(cors, {
+  origin: env.CORS_ORIGIN ? env.CORS_ORIGIN.split(",") : ["http://localhost:3000"],
+  credentials: true,
+  maxAge: 86400,
+});
 await app.register(multipart, {
   limits: { fileSize: 50 * 1024 * 1024, files: 10 },
 });

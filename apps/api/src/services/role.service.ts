@@ -3,6 +3,7 @@ import { ApiError } from "./auth.service.js";
 import type { CreateRoleRequest } from "@yxc/types";
 import { invalidateGuildPermissions, invalidatePermissions } from "./permission.service.js";
 import { roleRepository } from "../repositories/role.repository.js";
+import { guildRepository } from "../repositories/guild.repository.js";
 
 export async function createRole(guildId: string, data: CreateRoleRequest) {
   // Get highest position to put new role above @everyone
@@ -68,11 +69,45 @@ export async function deleteRole(roleId: string, guildId: string) {
   await invalidateGuildPermissions(guildId);
 }
 
+/**
+ * Validate that the acting user's highest role is above the target role.
+ * Guild owners bypass this check.
+ */
+export async function validateRoleHierarchy(
+  actorUserId: string,
+  guildId: string,
+  targetRoleId: string,
+) {
+  // Guild owners bypass hierarchy checks
+  const guild = await guildRepository.findOwnerById(guildId);
+  if (guild && guild.ownerId === actorUserId) return;
+
+  const allRoles = await roleRepository.findByGuildId(guildId);
+  const actorRoleIds = await roleRepository.getMemberRoleIds(actorUserId, guildId);
+
+  const targetRole = allRoles.find((r) => r.id === targetRoleId);
+  if (!targetRole) throw new ApiError(404, "Role not found");
+
+  // Find the actor's highest role position (highest position = most authority)
+  const actorHighestPosition = allRoles
+    .filter((r) => actorRoleIds.includes(r.id))
+    .reduce((max, r) => Math.max(max, r.position), 0);
+
+  if (actorHighestPosition <= targetRole.position) {
+    throw new ApiError(403, "Cannot manage a role equal to or higher than your highest role");
+  }
+}
+
 export async function addRoleToMember(
   guildId: string,
   userId: string,
-  roleId: string
+  roleId: string,
+  actorUserId?: string,
 ) {
+  if (actorUserId) {
+    await validateRoleHierarchy(actorUserId, guildId, roleId);
+  }
+
   await roleRepository.addToMember(userId, guildId, roleId);
 
   await invalidatePermissions(userId, guildId);
@@ -81,8 +116,13 @@ export async function addRoleToMember(
 export async function removeRoleFromMember(
   guildId: string,
   userId: string,
-  roleId: string
+  roleId: string,
+  actorUserId?: string,
 ) {
+  if (actorUserId) {
+    await validateRoleHierarchy(actorUserId, guildId, roleId);
+  }
+
   await roleRepository.removeFromMember(userId, guildId, roleId);
 
   await invalidatePermissions(userId, guildId);

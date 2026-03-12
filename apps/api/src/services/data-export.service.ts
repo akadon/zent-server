@@ -14,7 +14,7 @@ export async function exportUserData(userId: string) {
 
   const [memberships, messages, relationships, readStates] = await Promise.all([
     memberRepository.findMembershipsByUserId(userId),
-    messageRepository.findByAuthorId(userId),
+    messageRepository.findByAuthorId(userId, { limit: 100 }),
     relationshipRepository.findOutgoingByUserId(userId),
     readstateRepository.findByUserId(userId),
   ]);

@@ -226,7 +226,7 @@ export async function mfaRoutes(app: FastifyInstance) {
         await userRepository.update(userId, { mfaBackupCodes: rehashed });
       }
 
-      const token = generateToken(user.id);
+      const token = await generateToken(user.id);
 
       return reply.send({ token });
     }

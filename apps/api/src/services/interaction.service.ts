@@ -1,7 +1,13 @@
 import { generateSnowflake } from "@yxc/snowflake";
 import { ApiError } from "./auth.service.js";
 import { interactionRepository } from "../repositories/interaction.repository.js";
+import { messageRepository } from "../repositories/message.repository.js";
+import { userRepository } from "../repositories/user.repository.js";
+import { redis } from "../config/redis.js";
 import crypto from "crypto";
+
+// Redis key for tracking which message was the original response to an interaction
+const INTERACTION_MSG_PREFIX = "interaction_msg:";
 
 export interface Interaction {
   id: string;
@@ -171,6 +177,74 @@ export function createModalResponse(data: {
   };
 }
 
+// ── Interaction Message Creation ──
+
+async function createInteractionMessage(
+  channelId: string,
+  applicationId: string,
+  data: {
+    content?: string;
+    tts?: boolean;
+    flags?: number;
+  }
+): Promise<Record<string, any>> {
+  const id = generateSnowflake();
+  const content = data.content ?? "";
+  const tts = data.tts ?? false;
+  const mentionEveryone = content.includes("@everyone") || content.includes("@here");
+  const createdAt = new Date();
+
+  // Use the application (bot) as the author
+  const author = await userRepository.findPublicById(applicationId);
+  const authorSnapshot = author
+    ? { id: author.id, username: author.username, displayName: author.displayName, avatar: author.avatar }
+    : { id: applicationId, username: "Application", displayName: null, avatar: null };
+
+  // Message type 20 = CHAT_INPUT_COMMAND (interaction response)
+  await Promise.all([
+    messageRepository.create({
+      id,
+      channelId,
+      authorId: applicationId,
+      content,
+      type: 20,
+      tts,
+      nonce: null,
+      referencedMessageId: null,
+      mentionEveryone,
+      createdAt,
+      authorSnapshot,
+    }),
+    messageRepository.updateLastMessageId(channelId, id),
+  ]);
+
+  return {
+    id,
+    channelId,
+    author: author ?? {
+      id: applicationId,
+      username: "Application",
+      displayName: null,
+      avatar: null,
+      status: "offline",
+    },
+    content,
+    type: 20,
+    flags: data.flags ?? 0,
+    tts,
+    mentionEveryone,
+    pinned: false,
+    editedTimestamp: null,
+    referencedMessageId: null,
+    referencedMessage: null,
+    webhookId: null,
+    attachments: [],
+    embeds: [],
+    reactions: [],
+    createdAt: createdAt.toISOString(),
+  };
+}
+
 // ── Webhook Execution for Followup ──
 
 export async function sendFollowup(
@@ -190,13 +264,12 @@ export async function sendFollowup(
     throw new ApiError(404, "Unknown interaction or token expired");
   }
 
-  // In a real implementation, this would create a message via the webhook
-  // For now, we return the data that would be sent
-  return {
-    ...data,
-    interactionId: interaction.id,
-    applicationId,
-  };
+  if (!interaction.channelId) {
+    throw new ApiError(400, "Interaction has no channel to send followup to");
+  }
+
+  // Create a real message in the channel as the application (bot)
+  return await createInteractionMessage(interaction.channelId, interaction.applicationId, data);
 }
 
 export async function editOriginalResponse(
@@ -213,10 +286,48 @@ export async function editOriginalResponse(
     throw new ApiError(404, "Unknown interaction or token expired");
   }
 
+  // Look up the original response message ID from Redis
+  const messageId = await redis.get(`${INTERACTION_MSG_PREFIX}${interaction.id}`);
+  if (!messageId) {
+    throw new ApiError(404, "Original interaction response message not found");
+  }
+
+  // Update the message content
+  const updateData: Record<string, any> = {};
+  if (data.content !== undefined) updateData.content = data.content;
+  if (data.content !== undefined) updateData.editedTimestamp = new Date();
+  await messageRepository.update(messageId, updateData);
+
+  // Return the updated message
+  const message = await messageRepository.findById(messageId);
+  if (!message) {
+    throw new ApiError(404, "Message not found after update");
+  }
+
+  const author = await userRepository.findPublicById(message.authorId);
+  const resolvedAuthor = author ?? {
+    id: message.authorId,
+    username: "Deleted User",
+    displayName: null,
+    avatar: null,
+    status: "offline",
+  };
+
   return {
-    ...data,
-    interactionId: interaction.id,
-    applicationId,
+    id: message.id,
+    channelId: message.channelId,
+    author: resolvedAuthor,
+    content: message.content,
+    type: message.type,
+    flags: message.flags,
+    tts: message.tts,
+    mentionEveryone: message.mentionEveryone,
+    pinned: message.pinned,
+    editedTimestamp: message.editedTimestamp?.toISOString() ?? null,
+    attachments: [],
+    embeds: [],
+    reactions: [],
+    createdAt: message.createdAt.toISOString(),
   };
 }
 
@@ -229,7 +340,17 @@ export async function deleteOriginalResponse(
     throw new ApiError(404, "Unknown interaction or token expired");
   }
 
-  // In a real implementation, delete the original response message
+  // Look up the original response message ID from Redis
+  const messageId = await redis.get(`${INTERACTION_MSG_PREFIX}${interaction.id}`);
+  if (!messageId) {
+    throw new ApiError(404, "Original interaction response message not found");
+  }
+
+  // Delete the message
+  await messageRepository.delete(messageId);
+
+  // Clean up the Redis mapping
+  await redis.del(`${INTERACTION_MSG_PREFIX}${interaction.id}`);
 }
 
 // ── Interaction Response Callback ──
@@ -265,20 +386,34 @@ export async function respondToInteraction(
     case InteractionResponseType.PONG:
       return null; // No body for PONG
 
-    case InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE:
-      // In a full implementation, this would create a message in the channel
+    case InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE: {
+      if (!interaction.channelId) {
+        throw new ApiError(400, "Interaction has no channel to respond in");
+      }
+
+      // Create a real message in the channel
+      const message = await createInteractionMessage(
+        interaction.channelId,
+        interaction.applicationId,
+        {
+          content: data?.content,
+          tts: data?.tts,
+          flags: data?.flags,
+        }
+      );
+
+      // Store the message ID so we can edit/delete it later
+      await redis.setex(
+        `${INTERACTION_MSG_PREFIX}${interaction.id}`,
+        INTERACTION_TOKEN_TTL / 1000,
+        message.id
+      );
+
       return {
         type: responseType,
-        data: {
-          tts: data?.tts,
-          content: data?.content,
-          embeds: data?.embeds,
-          allowed_mentions: data?.allowed_mentions,
-          flags: data?.flags,
-          components: data?.components,
-          attachments: data?.attachments,
-        },
+        data: message,
       };
+    }
 
     case InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE:
       // Acknowledge and will send response later via followup

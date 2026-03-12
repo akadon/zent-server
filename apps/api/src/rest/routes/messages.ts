@@ -52,6 +52,32 @@ const componentSchema: z.ZodType<messageComponentService.ComponentData> = z.lazy
   })
 );
 
+/**
+ * Authorize a user's access to a channel.
+ * - Guild channels: verifies guild membership.
+ * - DM channels: verifies the user is a participant via dm_channels table.
+ * Returns the channel object on success, throws ApiError on failure.
+ */
+async function authorizeChannel(userId: string, channelId: string) {
+  const channel = await channelService.getChannel(channelId);
+  if (!channel) throw new ApiError(404, "Channel not found");
+
+  if (channel.guildId) {
+    const { isMember } = await import("../../services/guild.service.js");
+    if (!(await isMember(userId, channel.guildId))) {
+      throw new ApiError(403, "Not a member of this guild");
+    }
+  } else {
+    // DM channel — verify the user is a participant
+    const participant = await channelRepository.findDMRecipient(channelId, userId);
+    if (!participant) {
+      throw new ApiError(403, "Not a participant of this DM channel");
+    }
+  }
+
+  return channel;
+}
+
 async function dispatchMessage(channelId: string, event: string, data: unknown) {
   const channel = await channelService.getChannel(channelId);
   if (!channel) return;
@@ -77,14 +103,7 @@ export async function messageRoutes(app: FastifyInstance) {
   // Get channel messages (paginated)
   app.get("/channels/:channelId/messages", async (request, reply) => {
     const { channelId } = request.params as { channelId: string };
-    const channel = await channelService.getChannel(channelId);
-    if (!channel) throw new ApiError(404, "Channel not found");
-    if (channel.guildId) {
-      const { isMember } = await import("../../services/guild.service.js");
-      if (!(await isMember(request.userId, channel.guildId))) {
-        throw new ApiError(403, "Not a member of this guild");
-      }
-    }
+    await authorizeChannel(request.userId, channelId);
     const query = z
       .object({
         before: z.string().optional(),
@@ -102,6 +121,7 @@ export async function messageRoutes(app: FastifyInstance) {
     { preHandler: [createRateLimiter("messageCreate")] },
     async (request, reply) => {
       const { channelId } = request.params as { channelId: string };
+      await authorizeChannel(request.userId, channelId);
       const body = z
         .object({
           content: z.string().max(4000).optional().default(""),
@@ -175,6 +195,7 @@ export async function messageRoutes(app: FastifyInstance) {
     { preHandler: [createRateLimiter("messageCreate")] },
     async (request, reply) => {
       const { channelId } = request.params as { channelId: string };
+      await authorizeChannel(request.userId, channelId);
 
       const parts = request.parts();
       let content = "";
@@ -266,6 +287,7 @@ export async function messageRoutes(app: FastifyInstance) {
       channelId: string;
       messageId: string;
     };
+    await authorizeChannel(request.userId, channelId);
     const body = z
       .object({
         content: z.string().max(4000).optional(),
@@ -308,13 +330,13 @@ export async function messageRoutes(app: FastifyInstance) {
         channelId: string;
         messageId: string;
       };
+      const channel = await authorizeChannel(request.userId, channelId);
       const deleted = await messageService.deleteMessage(messageId, request.userId);
 
-      const channel = await channelService.getChannel(channelId);
       await dispatchMessage(channelId, "MESSAGE_DELETE", {
         id: messageId,
         channelId,
-        guildId: channel?.guildId ?? null,
+        guildId: channel.guildId ?? null,
       });
 
       return reply.status(204).send();
@@ -339,7 +361,16 @@ export async function messageRoutes(app: FastifyInstance) {
 
       await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.MANAGE_MESSAGES);
 
-      await messageRepository.deleteByIds(body.messages);
+      // Atomically verify all messages belong to the channel and delete them
+      // (prevents TOCTOU race between check and delete)
+      try {
+        await messageRepository.verifyAndDeleteByIds(body.messages, channelId);
+      } catch (err: any) {
+        if (err.message === "Some messages do not belong to this channel") {
+          throw new ApiError(400, err.message);
+        }
+        throw err;
+      }
 
       await dispatchMessage(channelId, "MESSAGE_DELETE_BULK", {
         ids: body.messages,
@@ -358,8 +389,7 @@ export async function messageRoutes(app: FastifyInstance) {
     { preHandler: [createRateLimiter("typing")] },
     async (request, reply) => {
       const { channelId } = request.params as { channelId: string };
-      const channel = await channelService.getChannel(channelId);
-      if (!channel) throw new ApiError(404, "Channel not found");
+      const channel = await authorizeChannel(request.userId, channelId);
 
       await dispatchMessage(channelId, "TYPING_START", {
         channelId,
@@ -384,16 +414,17 @@ export async function messageRoutes(app: FastifyInstance) {
         emoji: string;
       };
 
+      const channel = await authorizeChannel(request.userId, channelId);
+
       // emoji can be "name" for unicode or "name:id" for custom
       const [emojiName, emojiId] = emoji.includes(":") ? emoji.split(":") : [emoji, undefined];
       const result = await reactionService.addReaction(messageId, request.userId, emojiName!, emojiId);
 
-      const channel = await channelService.getChannel(channelId);
       await dispatchMessage(channelId, "MESSAGE_REACTION_ADD", {
         userId: request.userId,
         channelId,
         messageId,
-        guildId: channel?.guildId ?? null,
+        guildId: channel.guildId ?? null,
         emoji: { id: emojiId ?? null, name: emojiName },
       });
 
@@ -411,15 +442,16 @@ export async function messageRoutes(app: FastifyInstance) {
         emoji: string;
       };
 
+      const channel = await authorizeChannel(request.userId, channelId);
+
       const [emojiName, emojiId] = emoji.includes(":") ? emoji.split(":") : [emoji, undefined];
       await reactionService.removeReaction(messageId, request.userId, emojiName!, emojiId);
 
-      const channel = await channelService.getChannel(channelId);
       await dispatchMessage(channelId, "MESSAGE_REACTION_REMOVE", {
         userId: request.userId,
         channelId,
         messageId,
-        guildId: channel?.guildId ?? null,
+        guildId: channel.guildId ?? null,
         emoji: { id: emojiId ?? null, name: emojiName },
       });
 
@@ -430,10 +462,13 @@ export async function messageRoutes(app: FastifyInstance) {
   app.get(
     "/channels/:channelId/messages/:messageId/reactions/:emoji",
     async (request, reply) => {
-      const { messageId, emoji } = request.params as {
+      const { channelId, messageId, emoji } = request.params as {
+        channelId: string;
         messageId: string;
         emoji: string;
       };
+
+      await authorizeChannel(request.userId, channelId);
 
       const [emojiName, emojiId] = emoji.includes(":") ? emoji.split(":") : [emoji, undefined];
       const users = await reactionService.getReactions(messageId, emojiName!, emojiId);
@@ -448,6 +483,7 @@ export async function messageRoutes(app: FastifyInstance) {
       channelId: string;
       messageId: string;
     };
+    await authorizeChannel(request.userId, channelId);
     await readStateService.ackMessage(request.userId, channelId, messageId);
     return reply.status(204).send();
   });
@@ -456,22 +492,14 @@ export async function messageRoutes(app: FastifyInstance) {
 
   app.get("/channels/:channelId/pins", async (request, reply) => {
     const { channelId } = request.params as { channelId: string };
-    const channel = await channelService.getChannel(channelId);
-    if (!channel) throw new ApiError(404, "Channel not found");
-    if (channel.guildId) {
-      const { isMember } = await import("../../services/guild.service.js");
-      if (!(await isMember(request.userId, channel.guildId))) {
-        throw new ApiError(403, "Not a member of this guild");
-      }
-    }
+    await authorizeChannel(request.userId, channelId);
     const messages = await messageService.getPinnedMessages(channelId, request.userId);
     return reply.send(messages);
   });
 
   app.put("/channels/:channelId/pins/:messageId", async (request, reply) => {
     const { channelId, messageId } = request.params as { channelId: string; messageId: string };
-    const channel = await channelService.getChannel(channelId);
-    if (!channel) throw new ApiError(404, "Channel not found");
+    const channel = await authorizeChannel(request.userId, channelId);
     if (channel.guildId) {
       await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.MANAGE_MESSAGES);
     }
@@ -482,8 +510,7 @@ export async function messageRoutes(app: FastifyInstance) {
 
   app.delete("/channels/:channelId/pins/:messageId", async (request, reply) => {
     const { channelId, messageId } = request.params as { channelId: string; messageId: string };
-    const channel = await channelService.getChannel(channelId);
-    if (!channel) throw new ApiError(404, "Channel not found");
+    const channel = await authorizeChannel(request.userId, channelId);
     if (channel.guildId) {
       await permissionService.requireGuildPermission(request.userId, channel.guildId, PermissionFlags.MANAGE_MESSAGES);
     }

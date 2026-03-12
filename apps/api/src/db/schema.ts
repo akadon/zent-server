@@ -37,6 +37,8 @@ export const users = mysqlTable(
     flags: int("flags").notNull().default(0),
     premiumType: int("premium_type").notNull().default(0),
     locale: varchar("locale", { length: 10 }).notNull().default("en-US"),
+    isGuest: boolean("is_guest").notNull().default(false),
+    guestExpiresAt: datetime("guest_expires_at", { mode: "date" }),
     createdAt: datetime("created_at", { mode: "date" }).notNull().default(sql`NOW()`),
     updatedAt: datetime("updated_at", { mode: "date" }).notNull().default(sql`NOW()`),
   },

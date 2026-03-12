@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 
 export const inviteRepository = {
@@ -23,10 +23,9 @@ export const inviteRepository = {
     return (await db.select().from(schema.invites).where(eq(schema.invites.code, data.code)).limit(1))[0]!;
   },
   async incrementUses(code: string) {
-    const invite = await this.findByCode(code);
-    if (!invite) return null;
-    await db.update(schema.invites).set({ uses: invite.uses + 1 }).where(eq(schema.invites.code, code));
-    return { ...invite, uses: invite.uses + 1 };
+    await db.update(schema.invites).set({ uses: sql`uses + 1` }).where(eq(schema.invites.code, code));
+    const updated = await this.findByCode(code);
+    return updated;
   },
   async delete(code: string) {
     await db.delete(schema.invites).where(eq(schema.invites.code, code));

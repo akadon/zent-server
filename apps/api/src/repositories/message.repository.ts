@@ -136,6 +136,28 @@ export const messageRepository = {
     }
   },
 
+  /**
+   * Atomically verify messages belong to a channel and delete them.
+   * Prevents TOCTOU race where messages could be moved between check and delete.
+   */
+  async verifyAndDeleteByIds(ids: string[], channelId: string) {
+    if (ids.length === 0) return;
+    await db.transaction(async (tx) => {
+      // Verify all messages belong to the specified channel within the transaction
+      const msgs = await tx.select({ id: schema.messages.id, channelId: schema.messages.channelId })
+        .from(schema.messages)
+        .where(inArray(schema.messages.id, ids));
+      const invalidMessages = msgs.filter((m) => m.channelId !== channelId);
+      if (invalidMessages.length > 0) {
+        throw new Error("Some messages do not belong to this channel");
+      }
+      // Delete within the same transaction
+      await tx.delete(schema.messages).where(inArray(schema.messages.id, ids));
+    });
+    // Invalidate cache outside the transaction
+    redis.del(`${MSG_CACHE_PREFIX}${channelId}`).catch(() => {});
+  },
+
   async setPin(id: string, pinned: boolean) {
     await db.update(schema.messages).set({ pinned }).where(eq(schema.messages.id, id));
     const [msg] = await db.select({ channelId: schema.messages.channelId }).from(schema.messages).where(eq(schema.messages.id, id)).limit(1);
@@ -157,13 +179,18 @@ export const messageRepository = {
     return db.select().from(schema.messageAttachments).where(inArray(schema.messageAttachments.messageId, messageIds));
   },
 
-  async findByAuthorId(authorId: string, limit = 10000) {
+  async findByAuthorId(authorId: string, options?: { before?: string; limit?: number }) {
+    const limit = options?.limit ?? 100;
     return db.select({
       id: schema.messages.id,
       channelId: schema.messages.channelId,
       content: schema.messages.content,
       createdAt: schema.messages.createdAt,
-    }).from(schema.messages).where(eq(schema.messages.authorId, authorId)).limit(limit);
+    }).from(schema.messages).where(
+      options?.before
+        ? and(eq(schema.messages.authorId, authorId), lt(schema.messages.id, options.before))
+        : eq(schema.messages.authorId, authorId)
+    ).orderBy(desc(schema.messages.id)).limit(limit);
   },
 
   /** Invalidate message cache for a channel */

@@ -23,6 +23,11 @@ export async function userRoutes(app: FastifyInstance) {
 
   // Send friend request (by user ID)
   app.post("/users/@me/relationships", async (request, reply) => {
+    const caller = await getUserById(request.userId);
+    if (caller?.isGuest) {
+      throw new ApiError(403, "Guest accounts cannot add friends");
+    }
+
     const body = z
       .object({
         userId: z.string(),

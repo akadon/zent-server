@@ -41,6 +41,9 @@ export const pollRepository = {
   async createVote(pollId: string, optionId: string, userId: string) {
     await db.insert(schema.pollVotes).values({ pollId, optionId, userId });
   },
+  async createVoteInTx(tx: any, pollId: string, optionId: string, userId: string) {
+    await tx.insert(schema.pollVotes).values({ pollId, optionId, userId });
+  },
   async deleteVote(pollId: string, optionId: string, userId: string) {
     await db
       .delete(schema.pollVotes)
@@ -87,6 +90,11 @@ export const pollRepository = {
   },
   async deleteVotesByUser(pollId: string, userId: string) {
     await db
+      .delete(schema.pollVotes)
+      .where(and(eq(schema.pollVotes.pollId, pollId), eq(schema.pollVotes.userId, userId)));
+  },
+  async deleteVotesByUserInTx(tx: any, pollId: string, userId: string) {
+    await tx
       .delete(schema.pollVotes)
       .where(and(eq(schema.pollVotes.pollId, pollId), eq(schema.pollVotes.userId, userId)));
   },
