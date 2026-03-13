@@ -41,8 +41,8 @@ export const config: AppConfig = {
   s3: {
     endpoint: env.MINIO_ENDPOINT ?? file.s3?.endpoint ?? "localhost",
     port: env.MINIO_PORT ?? file.s3?.port ?? 9000,
-    accessKey: env.MINIO_ACCESS_KEY ?? file.s3?.accessKey ?? "minioadmin",
-    secretKey: env.MINIO_SECRET_KEY ?? file.s3?.secretKey ?? "minioadmin",
+    accessKey: env.MINIO_ACCESS_KEY ?? file.s3?.accessKey ?? "",
+    secretKey: env.MINIO_SECRET_KEY ?? file.s3?.secretKey ?? "",
     bucket: env.MINIO_BUCKET ?? file.s3?.bucket ?? "yxc-uploads",
     useSSL: env.MINIO_USE_SSL ?? file.s3?.useSSL ?? false,
   },

@@ -36,9 +36,9 @@ done
 
 # 5. Add nginx proxy for Grafana + OliveTin
 echo "[5/5] Checking nginx proxy config..."
-if ! grep -q "manage.3aka.com" /etc/nginx/sites-enabled/* 2>/dev/null; then
+if ! grep -q "manage." /etc/nginx/sites-enabled/* 2>/dev/null; then
   echo ""
-  echo "NOTE: Add nginx proxy for manage.3aka.com manually:"
+  echo "NOTE: Add nginx proxy for your management domain manually:"
   echo "  - Grafana: proxy_pass http://127.0.0.1:3100"
   echo "  - OliveTin: proxy_pass http://127.0.0.1:1337 at /olivetin/"
   echo "  - Or use Cloudflare Tunnel for zero-trust access"
@@ -46,9 +46,9 @@ fi
 
 echo ""
 echo "=== Deployment complete ==="
-echo "Cockpit:    https://193.123.36.192:9090 (VCN only)"
-echo "Grafana:    http://127.0.0.1:3100 (default: admin/changeme)"
+echo "Cockpit:    https://<server-ip>:9090 (VCN only)"
+echo "Grafana:    http://127.0.0.1:3100"
 echo "OliveTin:   http://127.0.0.1:1337"
-echo "Prometheus: http://127.0.0.1:9090"
+echo "Prometheus: http://127.0.0.1:9190"
 echo ""
-echo "Set GRAFANA_ADMIN_PASSWORD in .env before production use!"
+echo "Set GRAFANA_ADMIN_PASSWORD in .env before first use!"

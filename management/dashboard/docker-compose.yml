@@ -7,12 +7,12 @@ services:
       - "127.0.0.1:3500:3500"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /home/ubuntu/.ssh/server-key:/keys/server-key:ro
+      - ${SSH_KEY_PATH:-/home/ubuntu/.ssh/server-key}:/keys/server-key:ro
       - /home/ubuntu/.kube:/root/.kube:ro
       - /home/ubuntu/.oci:/root/.oci:ro
       - /home/ubuntu/.local/bin:/usr/local/extra-bin:ro
     environment:
-      - DASHBOARD_TOKEN=zent-dashboard-2026
+      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN:?Set DASHBOARD_TOKEN in .env}
     entrypoint: ["/bin/sh", "-c", "cp /keys/server-key /tmp/ssh-key && chmod 600 /tmp/ssh-key && ln -sf /tmp/ssh-key /keys/server-key 2>/dev/null; node server.js"]
     extra_hosts:
       - "host.docker.internal:host-gateway"

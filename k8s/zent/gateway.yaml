@@ -28,7 +28,7 @@ spec:
               app: zent-gateway
       containers:
         - name: zent-gateway
-          image: ghcr.io/akadon/zent-gateway:latest
+          image: zent-gateway:latest
           imagePullPolicy: Never
           ports:
             - containerPort: 4002

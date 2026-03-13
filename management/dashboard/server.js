@@ -9,19 +9,22 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/ws' });
 
 const PORT = 3500;
-const AUTH_TOKEN = process.env.DASHBOARD_TOKEN || 'zent-dashboard-2026';
+const AUTH_TOKEN = process.env.DASHBOARD_TOKEN;
+if (!AUTH_TOKEN) { console.error('DASHBOARD_TOKEN env required'); process.exit(1); }
 
-// --- Config ---
+// --- Config (all from environment) ---
+const SSH_KEY = process.env.SSH_KEY_PATH || '/tmp/ssh-key';
+const SSH_PORT = parseInt(process.env.SSH_PORT || '2222');
 const SERVERS = {
-  a1flex: { host: '10.0.20.221', port: 2222, key: '/tmp/ssh-key', user: 'ubuntu' },
-  micro1: { host: '10.0.20.208', port: 2222, key: '/tmp/ssh-key', user: 'ubuntu' },
-  micro2: { host: '10.0.20.164', port: 2222, key: '/tmp/ssh-key', user: 'ubuntu' },
+  a1flex: { host: process.env.A1FLEX_HOST, port: SSH_PORT, key: SSH_KEY, user: 'ubuntu' },
+  micro1: { host: process.env.MICRO1_HOST, port: SSH_PORT, key: SSH_KEY, user: 'ubuntu' },
+  micro2: { host: process.env.MICRO2_HOST, port: SSH_PORT, key: SSH_KEY, user: 'ubuntu' },
   local: null,
 };
 
-const ZENT_DIR = '/home/ubuntu/projects/zent-server';
-const REDIS_CONTAINER = 'zent-server-redis-1';
-const K8S_DIR = '/opt/oracleserver/k8s';
+const ZENT_DIR = process.env.ZENT_DIR || '/home/ubuntu/projects/zent-server';
+const REDIS_CONTAINER = process.env.REDIS_CONTAINER || 'zent-server-redis-1';
+const K8S_DIR = process.env.K8S_DIR || '/opt/oracleserver/k8s';
 
 // --- Auth middleware ---
 function auth(req, res, next) {
@@ -92,7 +95,7 @@ app.get('/api/system', auth, (req, res) => {
 });
 
 app.get('/api/ssl', auth, (req, res) => {
-  const domains = ['api.3aka.com', '3aka.com', 'gw.3aka.com'];
+  const domains = (process.env.SSL_CHECK_DOMAINS || 'localhost').split(',');
   const results = domains.map(d => {
     const out = runOn('a1flex', `echo | openssl s_client -servername ${d} -connect ${d}:443 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null || echo "error"`, 15000);
     return { domain: d, expiry: out };
@@ -236,7 +239,7 @@ app.post('/api/k8s/action', auth, (req, res) => {
     'uncordon-node': () => kubectl(`uncordon ${args.node} 2>&1`),
     'top-nodes': () => kubectl('top nodes 2>&1'),
     'top-pods': () => kubectl('top pods -A --sort-by=cpu 2>&1'),
-    'set-image': () => kubectl(`set image deploy/${args.deploy} ${args.deploy}=ghcr.io/akadon/${args.deploy}:${args.tag} -n ${ns} 2>&1`),
+    'set-image': () => kubectl(`set image deploy/${args.deploy} ${args.deploy}=${process.env.REGISTRY_PREFIX || 'ghcr.io/org'}/${args.deploy}:${args.tag} -n ${ns} 2>&1`),
   };
   if (!actions[action]) return res.status(400).json({ error: 'Unknown action' });
   try {

@@ -14,10 +14,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - 3aka.com
+        - ${DOMAIN}
       secretName: wildcard-tls
   rules:
-    - host: 3aka.com
+    - host: ${DOMAIN}
       http:
         paths:
           # WebSocket gateway - routes to gateway service

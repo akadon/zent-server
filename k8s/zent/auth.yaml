@@ -28,7 +28,7 @@ spec:
               app: zent-auth
       containers:
         - name: zent-auth
-          image: ghcr.io/akadon/zent-auth:latest
+          image: zent-auth:latest
           imagePullPolicy: Never
           ports:
             - containerPort: 4001

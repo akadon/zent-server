@@ -5,8 +5,8 @@
   "graphTooltip": 1,
   "id": null,
   "links": [
-    { "title": "Cockpit (A1.Flex)", "url": "https://cockpit.3aka.com:9090", "type": "link", "icon": "external link" },
-    { "title": "OliveTin", "url": "https://manage.3aka.com/olivetin/", "type": "link", "icon": "bolt" }
+    { "title": "Cockpit", "url": "https://cockpit.example.com:9090", "type": "link", "icon": "external link" },
+    { "title": "OliveTin", "url": "https://manage.example.com/olivetin/", "type": "link", "icon": "bolt" }
   ],
   "panels": [
     {

@@ -58,12 +58,12 @@ services:
       - "127.0.0.1:3100:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-changeme}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SECURITY_ALLOW_EMBEDDING: "true"
       GF_PANELS_DISABLE_SANITIZE_HTML: "true"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_SERVER_ROOT_URL: "https://manage.3aka.com"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3100}
       GF_SERVER_SERVE_FROM_SUB_PATH: "false"
       # Junior-dev RBAC: Viewer role by default
       GF_USERS_DEFAULT_THEME: dark
@@ -90,7 +90,7 @@ services:
     volumes:
       - ./olivetin/config.yaml:/config/config.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /home/ubuntu/.ssh/server-key:/keys/server-key:ro
+      - ${SSH_KEY_PATH:-/home/ubuntu/.ssh/server-key}:/keys/server-key:ro
     deploy:
       resources:
         limits:

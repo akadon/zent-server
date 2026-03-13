@@ -88,27 +88,28 @@ actions:
     popupOnStart: execution-dialog
 
   # ── Remote Servers ──
+  # Uses SSH config aliases (micro2, micro1) — set in ~/.ssh/config
   - title: Reboot Micro 2 (Registrar)
     icon: power
-    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@144.21.37.202 "sudo reboot"
+    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@$MICRO2_HOST "sudo reboot"
     timeout: 15
     popupOnStart: execution-dialog
 
   - title: Reboot Micro 1 (S3)
     icon: power
-    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@158.101.199.90 "sudo reboot"
+    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@$MICRO1_HOST "sudo reboot"
     timeout: 15
     popupOnStart: execution-dialog
 
   - title: Micro 2 Status
     icon: monitor
-    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@144.21.37.202 "echo '--- Memory ---' && free -h && echo '--- Disk ---' && df -h / && echo '--- Services ---' && systemctl is-active nginx cockpit.socket docker"
+    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@$MICRO2_HOST "echo '--- Memory ---' && free -h && echo '--- Disk ---' && df -h / && echo '--- Services ---' && systemctl is-active nginx cockpit.socket docker"
     timeout: 15
     popupOnStart: execution-dialog
 
   - title: Micro 1 Status
     icon: monitor
-    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@158.101.199.90 "echo '--- Memory ---' && free -h && echo '--- Disk ---' && df -h / && echo '--- Docker ---' && docker ps --format 'table {{.Names}}\t{{.Status}}'"
+    shell: ssh -o StrictHostKeyChecking=no -i /keys/server-key -p 2222 ubuntu@$MICRO1_HOST "echo '--- Memory ---' && free -h && echo '--- Disk ---' && df -h / && echo '--- Docker ---' && docker ps --format 'table {{.Names}}\t{{.Status}}'"
     timeout: 15
     popupOnStart: execution-dialog
 
