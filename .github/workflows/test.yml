@@ -15,7 +15,7 @@ jobs:
         with:
           node-version: 22
           cache: 'npm'
-      - run: npm ci
+      - run: npm install --no-audit --no-fund
       - name: Build workspace packages
         run: |
           for pkg in packages/types packages/snowflake packages/permissions packages/gateway-types; do
