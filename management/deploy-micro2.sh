@@ -29,7 +29,7 @@ ssh $MICRO2 "mkdir -p $REMOTE_DIR/olivetin"
 
 # 4. Copy config files
 echo "[4/6] Copying configs..."
-scp -P 2222 management/docker-compose.micro2.yml ubuntu@144.21.37.202:$REMOTE_DIR/docker-compose.yml
+scp -P 2222 management/docker-compose.micro2.yml $MICRO2:$REMOTE_DIR/docker-compose.yml
 
 # OliveTin config for Micro 2 (local-only actions)
 ssh $MICRO2 "cat > $REMOTE_DIR/olivetin/config.yaml" << 'OLIVETIN_EOF'
@@ -102,7 +102,7 @@ ssh $MICRO2 "cd $REMOTE_DIR && sg docker -c 'docker compose up -d'" 2>&1
 
 echo ""
 echo "=== Deployment complete ==="
-echo "Cockpit:  https://144.21.37.202:9090 (VCN only)"
+echo "Cockpit:  https://<micro2-ip>:9090 (VCN only)"
 echo "OliveTin: http://127.0.0.1:1337 (localhost only, proxy via nginx)"
 echo ""
 echo "Next: Add nginx proxy for OliveTin if external access needed."

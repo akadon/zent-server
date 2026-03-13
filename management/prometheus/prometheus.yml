@@ -45,20 +45,19 @@ scrape_configs:
   # Requires redis-exporter sidecar (optional, add later)
 
   # ── Micro 2 (Registrar) ──
+  # Set MICRO2_HOST env var to the VCN-internal IP
   - job_name: node-micro2
     static_configs:
-      - targets: ["144.21.37.202:9100"]
+      - targets: ["MICRO2_HOST:9100"]
         labels:
           server: micro2
           role: registrar
-    # node-exporter on micro2 binds to 127.0.0.1
-    # Requires SSH tunnel or binding to VCN IP
-    # For now, use the VCN internal IP if available
 
   # ── Micro 1 (SeaweedFS S3) ──
+  # Set MICRO1_HOST env var to the VCN-internal IP
   - job_name: node-micro1
     static_configs:
-      - targets: ["158.101.199.90:9100"]
+      - targets: ["MICRO1_HOST:9100"]
         labels:
           server: micro1
           role: seaweedfs

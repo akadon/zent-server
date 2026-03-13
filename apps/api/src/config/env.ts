@@ -10,8 +10,8 @@ const envSchema = z.object({
 
   MINIO_ENDPOINT: z.string().default("localhost"),
   MINIO_PORT: z.coerce.number().default(9000),
-  MINIO_ACCESS_KEY: z.string().default("minioadmin"),
-  MINIO_SECRET_KEY: z.string().default("minioadmin"),
+  MINIO_ACCESS_KEY: z.string().default(""),
+  MINIO_SECRET_KEY: z.string().default(""),
   MINIO_BUCKET: z.string().default("yxc-uploads"),
   MINIO_USE_SSL: z
     .string()
@@ -21,8 +21,8 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default("http://localhost:3000"),
   VOICE_SERVICE_URL: z.string().optional(),
   VOICE_INTERNAL_KEY: z.string().optional(),
-  RP_ID: z.string().default("3aka.com"),
-  RP_ORIGIN: z.string().default("https://3aka.com"),
+  RP_ID: z.string().default("localhost"),
+  RP_ORIGIN: z.string().default("http://localhost:3000"),
   ENABLE_PRESENCE: z
     .string()
     .transform((v) => v === "true")
