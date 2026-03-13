@@ -191,7 +191,7 @@ export async function invalidateUserCache(userId: string) {
 
 // ── Guest login ──
 
-export async function guestLogin() {
+export async function guestLogin(displayName?: string) {
   const id = generateSnowflake();
   const suffix = crypto.randomBytes(3).toString("hex"); // 6 hex chars
   const username = `Guest_${suffix}`;
@@ -205,6 +205,13 @@ export async function guestLogin() {
     isGuest: true,
     guestExpiresAt,
   });
+
+  // Set display name if provided (separate update for drizzle compat)
+  const trimmedName = displayName?.trim();
+  if (trimmedName) {
+    await userRepository.update(id, { displayName: trimmedName });
+    user.displayName = trimmedName;
+  }
 
   const token = await generateToken(user.id);
   const { passwordHash: _, mfaSecret: _s, mfaBackupCodes: _b, ...safeUser } = user;
