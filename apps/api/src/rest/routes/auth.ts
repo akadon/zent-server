@@ -36,7 +36,11 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   app.post("/auth/guest", { preHandler: [createRateLimiter("guestLogin")] }, async (request, reply) => {
-    const result = await guestLogin();
+    const body = request.body as Record<string, unknown> | undefined;
+    const displayName = typeof body?.displayName === "string" && body.displayName.trim().length > 0 && body.displayName.length <= 32
+      ? body.displayName.trim()
+      : undefined;
+    const result = await guestLogin(displayName);
     return reply.status(201).send(result);
   });
 

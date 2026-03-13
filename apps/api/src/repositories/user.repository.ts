@@ -20,7 +20,7 @@ export const userRepository = {
       .limit(1);
     return existing ?? null;
   },
-  async create(data: { id: string; username: string; email: string; passwordHash: string; isGuest?: boolean; guestExpiresAt?: Date | null }) {
+  async create(data: { id: string; username: string; email: string; passwordHash: string; displayName?: string | null; isGuest?: boolean; guestExpiresAt?: Date | null }) {
     await db.insert(schema.users).values(data);
     return (await db.select().from(schema.users).where(eq(schema.users.id, data.id)).limit(1))[0]!;
   },
